@@ -104,4 +104,24 @@ console.log('🧪 Starting Turing Machine Simulator Test Suite...\n');
   assert.strictEqual(stats.halted, true);
 }
 
+// 10. BB(5) Champion Stripes (Lines between Parabolas) Verification
+{
+  const sim = new TuringMachineSimulator(TuringMachineSimulator.parseBBChallenge('1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA'));
+  const ctx = sim.initRun(18000000);
+  // Advance past step 16,970,000 where the phase transition leaves the period-3 stripes
+  for (let s = 0; s < 170; s++) {
+    sim.stepChunk(100000);
+  }
+  const tape = ctx.tape;
+  const origin = ctx.tapeOrigin;
+  let stripes = 0;
+  for (let x = -7000; x <= -6500; x++) {
+    if (tape[origin + x] === 1 && tape[origin + x + 1] === 0 && tape[origin + x + 2] === 0 && tape[origin + x + 3] === 1) {
+      stripes++;
+    }
+  }
+  console.log(`[PASS] BB(5) Champion Stripes: detected ${stripes} period-3 stripes in transition region`);
+  assert(stripes > 100, 'BB(5) must produce period-3 stripes between parabolas');
+}
+
 console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY!');

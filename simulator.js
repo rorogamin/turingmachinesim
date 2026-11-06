@@ -259,17 +259,21 @@ class TuringMachineSimulator {
     const CHECKPOINT_INTERVAL = 10000;
     const checkpoints = new Map();
     const saveCheckpoint = (s) => {
+      const ctx = this._runContext;
+      if (!ctx) return;
       const snap = new Map();
-      const left = tapeOrigin + minHeadPos - 5;
-      const right = tapeOrigin + maxHeadPos + 5;
+      const tape = ctx.tape;
+      const origin = ctx.tapeOrigin;
+      const cap = ctx.tapeCapacity;
+      const left = origin + ctx.minHeadPos - 5;
+      const right = origin + ctx.maxHeadPos + 5;
       const start = Math.max(0, left);
-      const end = Math.min(tapeCapacity, right);
+      const end = Math.min(cap, right);
       for (let i = start; i < end; i++) {
-        if (tape[i] > 0) snap.set(i - tapeOrigin, tape[i]);
+        if (tape[i] > 0) snap.set(i - origin, tape[i]);
       }
-      checkpoints.set(s, { tapeSnap: snap, head: head - tapeOrigin, state });
+      checkpoints.set(s, { tapeSnap: snap, head: ctx.head - origin, state: ctx.state });
     };
-    saveCheckpoint(0);
 
     this._runContext = {
       spec,
@@ -302,6 +306,7 @@ class TuringMachineSimulator {
       haltReason: null,
       initialCells,
     };
+    saveCheckpoint(0);
 
     this.history = {
       maxSteps,

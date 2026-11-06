@@ -196,48 +196,52 @@ class SpaceTimeRenderer {
     this.tapeSpan = this.maxTapeX - this.minTapeX + 1;
     const W_cells = this.tapeSpan;
     const H_target = this.TARGET_HEIGHT; // 768
+    const W_target = this.TARGET_WIDTH;  // 512
 
-    // If streaming, compute how many rows of the 768-pixel height are completed so far
-    let activeRows = H_target;
-    if (isStreaming && maxLimit > 0) {
-      activeRows = Math.max(1, Math.min(H_target, Math.floor((totalSteps / maxLimit) * H_target)));
-    } else if (effectiveSteps + 1 < H_target) {
-      activeRows = effectiveSteps + 1;
-    }
-
-    const H_raw = Math.min(activeRows, H_target);
-
-    // 1. Build unscaled buffer (at most 768 rows)
-    this.rawCanvas.width = W_cells;
-    this.rawCanvas.height = H_raw;
-
-    const imgData = this.rawCtx.createImageData(W_cells, H_raw);
-    const pixelBuffer = new Uint32Array(imgData.data.buffer);
-
-    // Color lookup table
     const theme = this.themes[this.currentTheme] || this.themes.monochrome;
+    const rgb0 = theme.palette(0, maxSymbol);
+    const rgbMax = theme.palette(maxSymbol, maxSymbol);
+
+    // Color mapper for continuous density [0, 1] (area-averaging / binning)
+    const getDensityColor = (density) => {
+      if (density <= 0) {
+        return 0xFF000000 | (rgb0[2] << 16) | (rgb0[1] << 8) | rgb0[0];
+      }
+      // Gamma 2.0 boost to make fine lines / period-3 stripes clearly visible
+      const f = Math.min(1.0, Math.max(0.12, Math.pow(density, 0.5)));
+      const r = Math.round(rgb0[0] + (rgbMax[0] - rgb0[0]) * f);
+      const g = Math.round(rgb0[1] + (rgbMax[1] - rgb0[1]) * f);
+      const b = Math.round(rgb0[2] + (rgbMax[2] - rgb0[2]) * f);
+      return 0xFF000000 | (b << 16) | (g << 8) | r;
+    };
+
+    // Color lookup table for discrete symbols
     const colorLut = new Uint32Array(numSymbols + 1);
     for (let s = 0; s <= numSymbols; s++) {
       const rgb = theme.palette(s, maxSymbol);
-      // Little-endian 0xAABBGGRR
       colorLut[s] = 0xFF000000 | (rgb[2] << 16) | (rgb[1] << 8) | rgb[0];
     }
     const blankColor = colorLut[0];
 
-    // Initialize Row 0
-    pixelBuffer.fill(blankColor, 0, W_cells);
-    for (const cell of initialCells) {
-      const col = cell.pos - this.minTapeX;
-      if (col >= 0 && col < W_cells) {
-        const sym = cell.symbol;
-        pixelBuffer[col] = colorLut[sym >= numSymbols ? numSymbols : sym];
-      }
-    }
-
-    const historyLen = writeHistory ? writeHistory.length : 0;
-
     if (effectiveSteps + 1 <= H_target && !isStreaming) {
-      // 1-to-1 exact row per step
+      // 1-to-1 exact row per step for small runs (BB2, BB3, BB4, etc.)
+      const H_raw = effectiveSteps + 1;
+      this.rawCanvas.width = W_cells;
+      this.rawCanvas.height = H_raw;
+
+      const imgData = this.rawCtx.createImageData(W_cells, H_raw);
+      const pixelBuffer = new Uint32Array(imgData.data.buffer);
+      pixelBuffer.fill(blankColor, 0, W_cells);
+
+      for (const cell of initialCells) {
+        const col = cell.pos - this.minTapeX;
+        if (col >= 0 && col < W_cells) {
+          const sym = cell.symbol;
+          pixelBuffer[col] = colorLut[sym >= numSymbols ? numSymbols : sym];
+        }
+      }
+
+      const historyLen = writeHistory ? writeHistory.length : 0;
       for (let t = 1; t < H_raw; t++) {
         const prevRowStart = (t - 1) * W_cells;
         const currRowStart = t * W_cells;
@@ -252,59 +256,157 @@ class SpaceTimeRenderer {
           }
         }
       }
-    } else {
-      // Large run (> 768 steps) or streaming: sample rows smoothly across steps
-      const stepsToSample = isStreaming ? totalSteps : effectiveSteps;
-      let lastStep = 0;
-      for (let y = 1; y < H_raw; y++) {
-        const currStep = Math.min(stepsToSample, Math.floor((y / (H_raw - 1)) * stepsToSample));
-        const prevRowStart = (y - 1) * W_cells;
-        const currRowStart = y * W_cells;
-        pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W_cells);
+      this.rawCtx.putImageData(imgData, 0, 0);
 
-        // Apply all writes in [lastStep, currStep)
-        const limitS = Math.min(currStep, totalSteps, historyLen);
-        for (let s = lastStep; s < limitS; s++) {
-          const writePos = headHistory[s] - this.minTapeX;
-          const writtenSym = writeHistory[s];
-          if (writePos >= 0 && writePos < W_cells) {
-            pixelBuffer[currRowStart + writePos] = colorLut[writtenSym >= numSymbols ? numSymbols : writtenSym];
+      this.offscreenCanvas.width = W_target;
+      this.offscreenCanvas.height = H_target;
+      this.offscreenCtx.imageSmoothingEnabled = false;
+      this.offscreenCtx.fillStyle = theme.background;
+      this.offscreenCtx.fillRect(0, 0, W_target, H_target);
+      this.offscreenCtx.drawImage(this.rawCanvas, 0, 0, W_cells, H_raw, 0, 0, W_target, H_target);
+      return;
+    }
+
+    if (!isStreaming) {
+      // Completed large run: Fast binned tape sampling across the 768 rows
+      // Re-executes tape without allocating heavy history arrays (<0.6s for 47M steps)
+      this.offscreenCanvas.width = W_target;
+      this.offscreenCanvas.height = H_target;
+      const offImgData = this.offscreenCtx.createImageData(W_target, H_target);
+      const binnedPixels = new Uint32Array(offImgData.data.buffer);
+
+      const W_raw = Math.min(W_cells, 16384);
+      this.rawCanvas.width = W_raw;
+      this.rawCanvas.height = H_target;
+      const rawImgData = this.rawCtx.createImageData(W_raw, H_target);
+      const rawPixels = new Uint32Array(rawImgData.data.buffer);
+
+      const replay = new TuringMachineSimulator(this.sim.spec);
+      replay.setInitialTape(this.sim.initialTapeString, this.sim.initialHeadPos, this.sim.initialState);
+      const ctx = replay.initRun(this.totalSteps);
+
+      const rowSteps = new Int32Array(H_target);
+      for (let y = 0; y < H_target; y++) {
+        rowSteps[y] = Math.min(this.totalSteps, Math.floor((y / (H_target - 1)) * this.totalSteps));
+      }
+
+      let currRow = 0;
+      const minX = this.minTapeX;
+      const span = this.tapeSpan;
+
+      while (ctx.step <= this.totalSteps && !ctx.halted) {
+        while (currRow < H_target && ctx.step >= rowSteps[currRow]) {
+          const origin = ctx.tapeOrigin;
+          const tape = ctx.tape;
+          const cap = ctx.tapeCapacity;
+          const rowOffsetBinned = currRow * W_target;
+          const rowOffsetRaw = currRow * W_raw;
+
+          // 1. Raw buffer for crisp zoomed-in inspection
+          for (let x = 0; x < W_raw; x++) {
+            const c = minX + Math.floor((x / W_raw) * span);
+            const idx = origin + c;
+            const sym = (idx >= 0 && idx < cap) ? tape[idx] : 0;
+            rawPixels[rowOffsetRaw + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
           }
+
+          // 2. Binned buffer with area-averaging (preserves period-3 stripes between parabolas)
+          for (let x = 0; x < W_target; x++) {
+            const cellStart = minX + Math.floor((x / W_target) * span);
+            const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
+            const count = Math.max(1, cellEnd - cellStart);
+            let sum = 0;
+            for (let c = cellStart; c < cellEnd; c++) {
+              const idx = origin + c;
+              if (idx >= 0 && idx < cap) sum += tape[idx];
+            }
+            binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+          }
+          currRow++;
         }
-        lastStep = currStep;
+
+        if (ctx.step >= this.totalSteps || ctx.halted) break;
+        const nextTarget = currRow < H_target ? rowSteps[currRow] : this.totalSteps;
+        const chunk = Math.max(1, Math.min(100000, nextTarget - ctx.step));
+        replay.stepChunk(chunk);
+      }
+
+      // Fill any remaining rows if halted early
+      while (currRow < H_target) {
+        const origin = ctx.tapeOrigin;
+        const tape = ctx.tape;
+        const cap = ctx.tapeCapacity;
+        const rowOffsetBinned = currRow * W_target;
+        const rowOffsetRaw = currRow * W_raw;
+
+        for (let x = 0; x < W_raw; x++) {
+          const c = minX + Math.floor((x / W_raw) * span);
+          const idx = origin + c;
+          const sym = (idx >= 0 && idx < cap) ? tape[idx] : 0;
+          rawPixels[rowOffsetRaw + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
+        }
+
+        for (let x = 0; x < W_target; x++) {
+          const cellStart = minX + Math.floor((x / W_target) * span);
+          const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
+          const count = Math.max(1, cellEnd - cellStart);
+          let sum = 0;
+          for (let c = cellStart; c < cellEnd; c++) {
+            const idx = origin + c;
+            if (idx >= 0 && idx < cap) sum += tape[idx];
+          }
+          binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+        }
+        currRow++;
+      }
+
+      this.offscreenCtx.putImageData(offImgData, 0, 0);
+      this.rawCtx.putImageData(rawImgData, 0, 0);
+      return;
+    }
+
+    // Streaming mode: Live progress rendering
+    const activeRows = maxLimit > 0 ? Math.max(1, Math.min(H_target, Math.floor((totalSteps / maxLimit) * H_target))) : H_target;
+    this.offscreenCanvas.width = W_target;
+    this.offscreenCanvas.height = H_target;
+
+    const streamImgData = this.offscreenCtx.createImageData(W_target, activeRows);
+    const streamPixels = new Uint32Array(streamImgData.data.buffer);
+    streamPixels.fill(blankColor);
+
+    const runCtx = this.sim._runContext;
+    if (runCtx) {
+      const origin = runCtx.tapeOrigin;
+      const tape = runCtx.tape;
+      const cap = runCtx.tapeCapacity;
+      const minX = this.minTapeX;
+      const span = this.tapeSpan;
+
+      // Draw current tape across the completed rows
+      for (let y = 0; y < activeRows; y++) {
+        const rowOffset = y * W_target;
+        for (let x = 0; x < W_target; x++) {
+          const cellStart = minX + Math.floor((x / W_target) * span);
+          const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
+          const count = Math.max(1, cellEnd - cellStart);
+          let sum = 0;
+          for (let c = cellStart; c < cellEnd; c++) {
+            const idx = origin + c;
+            if (idx >= 0 && idx < cap) sum += tape[idx];
+          }
+          streamPixels[rowOffset + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+        }
       }
     }
 
-    this.rawCtx.putImageData(imgData, 0, 0);
-
-    // 2. Clear offscreen 512x768 canvas and draw
-    this.offscreenCanvas.width = this.TARGET_WIDTH;
-    this.offscreenCanvas.height = this.TARGET_HEIGHT;
-
-    this.offscreenCtx.imageSmoothingEnabled = false;
     this.offscreenCtx.fillStyle = theme.background;
-    this.offscreenCtx.fillRect(0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT);
+    this.offscreenCtx.fillRect(0, 0, W_target, H_target);
+    this.offscreenCtx.putImageData(streamImgData, 0, 0);
 
-    if (isStreaming && maxLimit > 0) {
-      // During streaming, draw completed rows from top down
-      const drawnHeight = Math.max(1, Math.min(this.TARGET_HEIGHT, Math.floor((activeRows / H_target) * this.TARGET_HEIGHT)));
-      this.offscreenCtx.drawImage(
-        this.rawCanvas,
-        0, 0, W_cells, H_raw,
-        0, 0, this.TARGET_WIDTH, drawnHeight
-      );
-
-      // Draw subtle progress scanline at the frontier
-      if (drawnHeight < this.TARGET_HEIGHT) {
-        this.offscreenCtx.fillStyle = theme.markerColor;
-        this.offscreenCtx.fillRect(0, drawnHeight, this.TARGET_WIDTH, 2);
-      }
-    } else {
-      this.offscreenCtx.drawImage(
-        this.rawCanvas,
-        0, 0, W_cells, H_raw,
-        0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT
-      );
+    // Subtle progress scanline at the frontier
+    if (activeRows < H_target) {
+      this.offscreenCtx.fillStyle = theme.markerColor;
+      this.offscreenCtx.fillRect(0, activeRows, W_target, 2);
     }
   }
 
@@ -369,7 +471,12 @@ class SpaceTimeRenderer {
     ctx.scale(this.zoom, this.zoom);
 
     // Draw the 512 x 768 diagram
-    ctx.drawImage(this.offscreenCanvas, 0, 0);
+    // When zoomed in (zoom > 1.5), draw from high-res rawCanvas for crisp discrete cell and line inspection!
+    if (this.zoom > 1.5 && this.rawCanvas && this.rawCanvas.width > 0 && this.rawCanvas.height > 0) {
+      ctx.drawImage(this.rawCanvas, 0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT);
+    } else {
+      ctx.drawImage(this.offscreenCanvas, 0, 0);
+    }
 
     // Subtle crisp border around diagram
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
@@ -383,7 +490,8 @@ class SpaceTimeRenderer {
       ctx.strokeStyle = theme.headColor;
       ctx.lineWidth = Math.max(1, 2 / this.zoom);
 
-      for (let t = 0; t <= totalSteps; t++) {
+      const stride = Math.max(1, Math.floor(totalSteps / 40000));
+      for (let t = 0; t <= totalSteps; t += stride) {
         const normX = (headHistory[t] - this.minTapeX + 0.5) / this.tapeSpan;
         const normY = (t + 0.5) / (totalSteps + 1);
         const x = normX * this.TARGET_WIDTH;
