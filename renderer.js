@@ -226,10 +226,6 @@ class SpaceTimeRenderer {
     const span = this.tapeSpan;
     const minX = this.minTapeX;
 
-    const { rowSnapshots, nextSnapshotRow } = this.sim.history || {};
-    const totalCaptured = (nextSnapshotRow !== undefined) ? nextSnapshotRow : (rowSnapshots ? rowSnapshots.length : 0);
-    const completedRows = isStreaming ? Math.min(totalCaptured, H_target) : H_target;
-
     this.offscreenCanvas.width = W_target;
     this.offscreenCanvas.height = H_target;
     const offImgData = this.offscreenCtx.createImageData(W_target, H_target);
@@ -242,6 +238,46 @@ class SpaceTimeRenderer {
     const rawImgData = this.rawCtx.createImageData(W_raw, H_target);
     const rawPixels = new Uint32Array(rawImgData.data.buffer);
     rawPixels.fill(blankColor);
+
+    if (effectiveSteps <= 10000 && !isStreaming) {
+      // Small to medium runs (BB2, BB3, BB4, etc.): Exact step-by-step tape reconstruction
+      for (let y = 0; y < H_target; y++) {
+        const step = Math.min(effectiveSteps, Math.floor((y / Math.max(1, H_target - 1)) * effectiveSteps));
+        const info = this.sim.getTapeAtStep(step);
+        const rowOffsetBinned = y * W_target;
+        const rowOffsetRaw = y * W_raw;
+
+        if (!info) continue;
+
+        // 1. Raw discrete cells
+        for (let x = 0; x < W_raw; x++) {
+          const c = minX + Math.floor((x / W_raw) * span);
+          const sym = info.tapeMap.get(c) || 0;
+          rawPixels[rowOffsetRaw + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
+        }
+
+        // 2. Binned pixels with density mapping
+        for (let x = 0; x < W_target; x++) {
+          const cellStart = minX + Math.floor((x / W_target) * span);
+          const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
+          const count = Math.max(1, cellEnd - cellStart);
+          let sum = 0;
+          for (let c = cellStart; c < cellEnd; c++) {
+            sum += info.tapeMap.get(c) || 0;
+          }
+          binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+        }
+      }
+
+      this.offscreenCtx.putImageData(offImgData, 0, 0);
+      this.rawCtx.putImageData(rawImgData, 0, 0);
+      return;
+    }
+
+    // Large runs (>10,000 steps, e.g. BB5) or active streaming mode
+    const { rowSnapshots, nextSnapshotRow } = this.sim.history || {};
+    const totalCaptured = (nextSnapshotRow !== undefined) ? nextSnapshotRow : (rowSnapshots ? rowSnapshots.length : 0);
+    const completedRows = isStreaming ? Math.min(totalCaptured, H_target) : H_target;
 
     // Map canvas row y (0..H_target-1) to snapshot index
     const mapYToSnap = (y) => {
