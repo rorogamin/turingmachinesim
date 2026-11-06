@@ -1,0 +1,21 @@
+{
+  "name": "turingmachinesim",
+  "version": "1.0.0",
+  "description": "Ultra-fast Turing Machine Simulator with Space-Time Diagrams, bbchallenge format, custom starting tapes, themes, and interactive explore mode.",
+  "main": "simulator.js",
+  "scripts": {
+    "test": "node test.js",
+    "start": "npx serve ."
+  },
+  "keywords": [
+    "turing-machine",
+    "busy-beaver",
+    "bbchallenge",
+    "spacetime-diagram",
+    "cellular-automata",
+    "theoretical-computer-science",
+    "simulation"
+  ],
+  "author": "rorogamin",
+  "license": "MIT"
+}

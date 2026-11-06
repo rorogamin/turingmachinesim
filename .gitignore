@@ -1,0 +1,17 @@
+# OS and Editor files
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*~
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Logs
+*.log
+npm-debug.log*
+
+# Workspace
+.gemini/
