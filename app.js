@@ -374,9 +374,25 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTableFromSpec(simulator.spec);
   });
 
-  // Run Simulation
-  function runSimulation() {
+  // Streaming State
+  let isStreaming = false;
+  let streamAnimationId = null;
+
+  // Run or Stop Simulation (Streaming Engine)
+  function toggleSimulation() {
+    if (isStreaming) {
+      stopStreamingSimulation(true);
+    } else {
+      startStreamingSimulation();
+    }
+  }
+
+  function startStreamingSimulation() {
     stopPlayback();
+    if (isStreaming) {
+      stopStreamingSimulation(true);
+    }
+
     const bbCode = bbInput.value.trim();
     if (!bbCode) return;
 
@@ -387,7 +403,6 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    // Parse step limit (supports arbitrary size without restriction, strips commas)
     const rawVal = String(maxStepsInput.value || '').replace(/,/g, '').trim();
     const parsedLimit = parseInt(rawVal, 10);
     const maxSteps = Math.max(1, isNaN(parsedLimit) ? 500 : parsedLimit);
@@ -397,35 +412,119 @@ document.addEventListener('DOMContentLoaded', () => {
     const startState = startStateSelect.value || 'A';
 
     simulator.setInitialTape(startTape, headOffset, startState);
-    const stats = simulator.run(maxSteps);
+    simulator.initRun(maxSteps);
 
-    // Update Stats Display
+    // Update UI for streaming state
+    isStreaming = true;
+    btnRun.innerHTML = '<span class="btn-icon">⏹</span> Stop Simulation';
+    btnRun.classList.remove('btn-primary');
+    btnRun.classList.add('btn-danger');
+
+    statStatus.textContent = 'Streaming...';
+    statStatus.className = 'badge badge-running';
+
+    const startTime = performance.now();
+    let lastDrawTime = 0;
+    const FRAME_BUDGET_MS = 14; // Yield to browser every 14ms for smooth 60fps
+
+    function streamTick() {
+      if (!isStreaming) return;
+
+      const frameStart = performance.now();
+      let done = false;
+
+      // Execute simulation steps within frame budget
+      while (performance.now() - frameStart < FRAME_BUDGET_MS) {
+        const res = simulator.stepChunk(50000);
+        if (res.done) {
+          done = true;
+          break;
+        }
+      }
+
+      const now = performance.now();
+      const currentStep = simulator._runContext ? simulator._runContext.step : 0;
+
+      // Throttle visual diagram updates to ~10-15 fps so rendering does not slow down engine
+      if (now - lastDrawTime > 90 || done) {
+        lastDrawTime = now;
+        const elapsedSec = (now - startTime) / 1000;
+        const rate = elapsedSec > 0 ? (currentStep / elapsedSec) : 0;
+
+        statSteps.textContent = `${currentStep.toLocaleString()} / ${maxSteps.toLocaleString()}`;
+        statSpeed.textContent = `${(rate / 1e6).toFixed(2)} M/s`;
+        statTime.textContent = `${(now - startTime).toFixed(1)} ms`;
+        statSpan.textContent = `[${simulator.history.minHeadPos}, ${simulator.history.maxHeadPos}]`;
+
+        // Live stream diagram update
+        renderer.framingMode = framingSelect ? framingSelect.value : 'nonzeros';
+        renderer.padToLimit = togglePadLimit ? togglePadLimit.checked : false;
+        renderer.buildDiagram(simulator);
+        renderer.render();
+
+        exploreSlider.max = Math.max(1, currentStep);
+      }
+
+      if (done) {
+        stopStreamingSimulation(false);
+      } else {
+        streamAnimationId = requestAnimationFrame(streamTick);
+      }
+    }
+
+    streamAnimationId = requestAnimationFrame(streamTick);
+  }
+
+  function stopStreamingSimulation(wasCancelled = false) {
+    if (streamAnimationId) {
+      cancelAnimationFrame(streamAnimationId);
+      streamAnimationId = null;
+    }
+    isStreaming = false;
+
+    // Restore Run button
+    btnRun.innerHTML = '<span class="btn-icon">⚡</span> Run Simulation';
+    btnRun.classList.remove('btn-danger');
+    btnRun.classList.add('btn-primary');
+
+    const stats = simulator.finishRun();
+    const maxSteps = stats.maxStepsLimit || stats.totalSteps;
+
+    // Final Stats Display
     if (stats.halted) {
       statSteps.textContent = `${stats.totalSteps.toLocaleString()} (halted)`;
       statStatus.textContent = `Halted at step ${stats.totalSteps.toLocaleString()}`;
       statStatus.title = `Halted at step ${stats.totalSteps} (step limit was ${maxSteps.toLocaleString()})`;
+    } else if (wasCancelled) {
+      statSteps.textContent = `${stats.totalSteps.toLocaleString()} / ${maxSteps.toLocaleString()}`;
+      statStatus.textContent = 'Stopped by user';
     } else {
       statSteps.textContent = `${stats.totalSteps.toLocaleString()} / ${maxSteps.toLocaleString()}`;
       statStatus.textContent = 'Step Limit Reached';
       statStatus.title = `Reached step limit of ${maxSteps.toLocaleString()}`;
     }
+
     statStatus.className = stats.halted ? 'badge badge-halted' : 'badge badge-running';
     statNonzeros.textContent = stats.finalNonZeros.toLocaleString();
     statSpan.textContent = `[${stats.minX}, ${stats.maxX}] (${stats.maxX - stats.minX + 1} cells)`;
     statTime.textContent = `${stats.elapsedMs.toFixed(2)} ms`;
     statSpeed.textContent = `${(stats.stepsPerSec / 1e6).toFixed(2)} M/s`;
 
-    // Build Spacetime Diagram (512 wide x 768 tall, end of nonzeros)
+    // Final high-res 512x768 render
     renderer.framingMode = framingSelect ? framingSelect.value : 'nonzeros';
     renderer.padToLimit = togglePadLimit ? togglePadLimit.checked : false;
     renderer.buildDiagram(simulator);
     renderer.fitView('fit');
 
     // Setup Explore Slider
-    exploreSlider.max = stats.totalSteps;
+    exploreSlider.max = Math.max(1, stats.totalSteps);
     currentStep = Math.min(currentStep, stats.totalSteps);
     exploreSlider.value = currentStep;
     updateExploreView(currentStep);
+  }
+
+  function runSimulation() {
+    startStreamingSimulation();
   }
 
   // Explore Mode Toggle
@@ -625,7 +724,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // UI Event Handlers
-  btnRun.addEventListener('click', runSimulation);
+  btnRun.addEventListener('click', toggleSimulation);
 
   presetSelect.addEventListener('change', (e) => {
     if (e.target.value) {

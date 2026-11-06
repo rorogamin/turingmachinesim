@@ -88,4 +88,20 @@ console.log('🧪 Starting Turing Machine Simulator Test Suite...\n');
   assert(stats.stepsPerSec > 10000000, 'Simulator must achieve > 10M steps/sec');
 }
 
+// 9. Streaming API Verification
+{
+  const sim = new TuringMachineSimulator(TuringMachineSimulator.parseBBChallenge('1RB1LB_1LA0LC_1RZ1LD_1RD0RA'));
+  sim.initRun(500);
+  let chunks = 0;
+  while (true) {
+    const res = sim.stepChunk(20);
+    chunks++;
+    if (res.done) break;
+  }
+  const stats = sim.finishRun();
+  console.log(`[PASS] Streaming API: halted in ${stats.totalSteps} steps across ${chunks} chunks`);
+  assert.strictEqual(stats.totalSteps, 107);
+  assert.strictEqual(stats.halted, true);
+}
+
 console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY!');

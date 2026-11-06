@@ -2,6 +2,7 @@
  * Turing Machine Engine & bbchallenge Parser
  * Ultra-fast Turing Machine simulation engine using typed arrays.
  * Capable of >100,000,000 steps/sec.
+ * Supports synchronous runs and streaming chunked execution for zero UI lag.
  */
 
 class TuringMachineSimulator {
@@ -15,14 +16,20 @@ class TuringMachineSimulator {
     this.history = null;
     this.stats = {
       totalSteps: 0,
+      maxStepsLimit: 0,
       halted: false,
       haltReason: null,
       minX: 0,
       maxX: 0,
+      minNonZeroX: 0,
+      maxNonZeroX: 0,
       finalNonZeros: 0,
       elapsedMs: 0,
       stepsPerSec: 0,
     };
+
+    // Streaming state
+    this._runContext = null;
   }
 
   /**
@@ -192,7 +199,6 @@ class TuringMachineSimulator {
   getInitialTapeCells() {
     const str = (this.initialTapeString || '0').trim();
     const cells = [];
-    // Can be whitespace/comma separated or contiguous digits
     const tokens = str.includes(' ') || str.includes(',')
       ? str.split(/[\s,]+/).filter(Boolean)
       : str.split('');
@@ -207,24 +213,20 @@ class TuringMachineSimulator {
   }
 
   /**
-   * Execute simulation up to maxSteps.
-   * Uses high-speed typed arrays and records history for spacetime diagrams and exploration.
+   * Initialize a simulation run (for streaming or synchronous execution).
    */
-  run(maxSteps = 50000) {
+  initRun(maxSteps = 50000) {
     const startTime = performance.now();
     const spec = this.spec;
     const { numStates, numSymbols, writeArray, dirArray, nextStateArray, isHaltArray, isUndefinedArray } = spec;
 
-    // Start state
     let state = this.initialState.charCodeAt(0) - 65;
     if (state < 0 || state >= numStates) state = 0;
 
-    // Fast expandable tape buffer
     let tapeCapacity = 131072;
     let tape = new Uint8Array(tapeCapacity);
-    let tapeOrigin = tapeCapacity >> 1; // tape[origin] corresponds to x = 0
+    let tapeOrigin = tapeCapacity >> 1;
 
-    // Load initial tape
     const initialCells = this.getInitialTapeCells();
     for (const cell of initialCells) {
       const idx = tapeOrigin + cell.pos;
@@ -237,7 +239,6 @@ class TuringMachineSimulator {
     let minHeadPos = this.initialHeadPos;
     let maxHeadPos = this.initialHeadPos;
 
-    // If initial tape had non-zeros, expand bounds
     for (const cell of initialCells) {
       if (cell.symbol > 0) {
         if (cell.pos < minHeadPos) minHeadPos = cell.pos;
@@ -245,21 +246,19 @@ class TuringMachineSimulator {
       }
     }
 
-    // Allocate history arrays
-    const headHistory = new Int32Array(maxSteps + 1);
-    const stateHistory = new Uint8Array(maxSteps + 1);
-    const writeHistory = new Uint8Array(maxSteps);
-    const prevSymHistory = new Uint8Array(maxSteps);
+    // Allocate history arrays (cap at 5M steps to prevent runaway memory on huge runs)
+    const historyCap = Math.min(maxSteps, 5000000);
+    const headHistory = new Int32Array(historyCap + 1);
+    const stateHistory = new Uint8Array(historyCap + 1);
+    const writeHistory = new Uint8Array(historyCap);
+    const prevSymHistory = new Uint8Array(historyCap);
 
-    // Initial state at t = 0
     headHistory[0] = this.initialHeadPos;
     stateHistory[0] = state;
 
-    // Checkpoint management for fast explore mode:
-    // Every CHECKPOINT_INTERVAL steps, save a snapshot of non-zero tape
     const CHECKPOINT_INTERVAL = 10000;
     const checkpoints = new Map();
-    const saveCheckpoint = (step) => {
+    const saveCheckpoint = (s) => {
       const snap = new Map();
       const left = tapeOrigin + minHeadPos - 5;
       const right = tapeOrigin + maxHeadPos + 5;
@@ -268,17 +267,98 @@ class TuringMachineSimulator {
       for (let i = start; i < end; i++) {
         if (tape[i] > 0) snap.set(i - tapeOrigin, tape[i]);
       }
-      checkpoints.set(step, { tapeSnap: snap, head: head - tapeOrigin, state });
+      checkpoints.set(s, { tapeSnap: snap, head: head - tapeOrigin, state });
     };
     saveCheckpoint(0);
 
-    let step = 0;
-    let halted = false;
-    let haltReason = null;
+    this._runContext = {
+      spec,
+      numStates,
+      numSymbols,
+      writeArray,
+      dirArray,
+      nextStateArray,
+      isHaltArray,
+      isUndefinedArray,
+      tapeCapacity,
+      tape,
+      tapeOrigin,
+      head,
+      state,
+      minHeadPos,
+      maxHeadPos,
+      step: 0,
+      maxSteps,
+      historyCap,
+      headHistory,
+      stateHistory,
+      writeHistory,
+      prevSymHistory,
+      CHECKPOINT_INTERVAL,
+      checkpoints,
+      saveCheckpoint,
+      startTime,
+      halted: false,
+      haltReason: null,
+      initialCells,
+    };
 
-    // Tight inner simulation loop
-    while (step < maxSteps) {
-      // Dynamic tape expansion if head nears buffer edges (rare)
+    this.history = {
+      maxSteps,
+      totalSteps: 0,
+      headHistory,
+      stateHistory,
+      writeHistory,
+      prevSymHistory,
+      minHeadPos,
+      maxHeadPos,
+      minNonZeroX: minHeadPos,
+      maxNonZeroX: maxHeadPos,
+      checkpoints,
+      CHECKPOINT_INTERVAL,
+      initialCells,
+    };
+
+    this.stats = {
+      totalSteps: 0,
+      maxStepsLimit: maxSteps,
+      halted: false,
+      haltReason: null,
+      minX: minHeadPos,
+      maxX: maxHeadPos,
+      minNonZeroX: minHeadPos,
+      maxNonZeroX: maxHeadPos,
+      finalNonZeros: 0,
+      elapsedMs: 0,
+      stepsPerSec: 0,
+    };
+
+    return this._runContext;
+  }
+
+  /**
+   * Execute a batch/chunk of simulation steps.
+   * Yields control back to the caller for streaming.
+   */
+  stepChunk(chunkSize = 50000) {
+    const ctx = this._runContext;
+    if (!ctx || ctx.halted || ctx.step >= ctx.maxSteps) {
+      return { done: true, totalSteps: ctx ? ctx.step : 0, stepsInChunk: 0, halted: ctx ? ctx.halted : false };
+    }
+
+    const {
+      numSymbols, writeArray, dirArray, nextStateArray, isHaltArray, isUndefinedArray,
+      maxSteps, historyCap, headHistory, stateHistory, writeHistory, prevSymHistory,
+      CHECKPOINT_INTERVAL, saveCheckpoint
+    } = ctx;
+
+    let { tapeCapacity, tape, tapeOrigin, head, state, minHeadPos, maxHeadPos, step } = ctx;
+
+    const targetStep = Math.min(step + chunkSize, maxSteps);
+    const startStep = step;
+
+    while (step < targetStep) {
+      // Dynamic tape expansion if head nears buffer edges
       if (head < 512 || head > tapeCapacity - 512) {
         const newCap = tapeCapacity * 2;
         const newTape = new Uint8Array(newCap);
@@ -288,14 +368,17 @@ class TuringMachineSimulator {
         tapeOrigin += shift;
         head += shift;
         tapeCapacity = newCap;
+        ctx.tape = tape;
+        ctx.tapeOrigin = tapeOrigin;
+        ctx.tapeCapacity = newCap;
       }
 
       const sym = tape[head];
       const lookupIdx = state * numSymbols + sym;
 
       if (isUndefinedArray[lookupIdx]) {
-        halted = true;
-        haltReason = 'undefined_transition';
+        ctx.halted = true;
+        ctx.haltReason = 'undefined_transition';
         break;
       }
 
@@ -304,11 +387,11 @@ class TuringMachineSimulator {
       const ns = nextStateArray[lookupIdx];
       const isHalt = isHaltArray[lookupIdx];
 
-      // Record history
-      writeHistory[step] = w;
-      prevSymHistory[step] = sym;
+      if (step < historyCap) {
+        writeHistory[step] = w;
+        prevSymHistory[step] = sym;
+      }
 
-      // Apply write & move
       tape[head] = w;
       head += d;
       const currPos = head - tapeOrigin;
@@ -316,28 +399,68 @@ class TuringMachineSimulator {
       if (currPos > maxHeadPos) maxHeadPos = currPos;
 
       step++;
-      headHistory[step] = currPos;
+      if (step <= historyCap) {
+        headHistory[step] = currPos;
+      }
 
       if (isHalt || ns === -1) {
-        stateHistory[step] = 255; // Halt marker
-        halted = true;
-        haltReason = 'halt_transition';
+        if (step <= historyCap) stateHistory[step] = 255;
+        ctx.halted = true;
+        ctx.haltReason = 'halt_transition';
         break;
       }
 
       state = ns;
-      stateHistory[step] = state;
+      if (step <= historyCap) {
+        stateHistory[step] = state;
+      }
 
       if (step % CHECKPOINT_INTERVAL === 0) {
+        ctx.head = head;
+        ctx.state = state;
+        ctx.minHeadPos = minHeadPos;
+        ctx.maxHeadPos = maxHeadPos;
         saveCheckpoint(step);
       }
     }
 
-    if (!halted && step >= maxSteps) {
-      haltReason = 'step_limit';
+    if (!ctx.halted && step >= maxSteps) {
+      ctx.haltReason = 'step_limit';
     }
 
-    // Count non-zero symbols on final tape and determine non-zero bounds
+    ctx.head = head;
+    ctx.state = state;
+    ctx.minHeadPos = minHeadPos;
+    ctx.maxHeadPos = maxHeadPos;
+    ctx.step = step;
+
+    // Update history wrapper
+    this.history.totalSteps = step;
+    this.history.minHeadPos = minHeadPos;
+    this.history.maxHeadPos = maxHeadPos;
+
+    const stepsInChunk = step - startStep;
+    const done = ctx.halted || step >= maxSteps;
+
+    return {
+      done,
+      stepsInChunk,
+      totalSteps: step,
+      halted: ctx.halted,
+      haltReason: ctx.haltReason,
+    };
+  }
+
+  /**
+   * Finalize the simulation run and compute statistics.
+   */
+  finishRun() {
+    const ctx = this._runContext;
+    if (!ctx) return this.stats;
+
+    const { tape, tapeOrigin, minHeadPos, maxHeadPos, step, maxSteps, tapeCapacity, startTime, halted, haltReason, historyCap, headHistory, stateHistory, writeHistory, prevSymHistory } = ctx;
+
+    // Count non-zeros on final tape and determine non-zero bounds
     let nonZeros = 0;
     let minNonZero = Infinity;
     let maxNonZero = -Infinity;
@@ -360,27 +483,22 @@ class TuringMachineSimulator {
     const elapsedMs = performance.now() - startTime;
     const stepsPerSec = elapsedMs > 0 ? (step / (elapsedMs / 1000)) : 0;
 
-    this.history = {
-      maxSteps,
-      totalSteps: step,
-      headHistory: headHistory.subarray(0, step + 1),
-      stateHistory: stateHistory.subarray(0, step + 1),
-      writeHistory: writeHistory.subarray(0, step),
-      prevSymHistory: prevSymHistory.subarray(0, step),
-      minHeadPos,
-      maxHeadPos,
-      minNonZeroX: minNonZero,
-      maxNonZeroX: maxNonZero,
-      checkpoints,
-      CHECKPOINT_INTERVAL,
-      initialCells,
-    };
+    const historySteps = Math.min(step, historyCap);
+    this.history.totalSteps = step;
+    this.history.minHeadPos = minHeadPos;
+    this.history.maxHeadPos = maxHeadPos;
+    this.history.minNonZeroX = minNonZero;
+    this.history.maxNonZeroX = maxNonZero;
+    this.history.headHistory = headHistory.subarray(0, historySteps + 1);
+    this.history.stateHistory = stateHistory.subarray(0, historySteps + 1);
+    this.history.writeHistory = writeHistory.subarray(0, historySteps);
+    this.history.prevSymHistory = prevSymHistory.subarray(0, historySteps);
 
     this.stats = {
       totalSteps: step,
       maxStepsLimit: maxSteps,
       halted,
-      haltReason,
+      haltReason: halted ? haltReason : (step >= maxSteps ? 'step_limit' : 'stopped'),
       minX: minHeadPos,
       maxX: maxHeadPos,
       minNonZeroX: minNonZero,
@@ -394,14 +512,27 @@ class TuringMachineSimulator {
   }
 
   /**
+   * Synchronous execution wrapper.
+   */
+  run(maxSteps = 50000) {
+    this.initRun(maxSteps);
+    while (true) {
+      const res = this.stepChunk(100000);
+      if (res.done) break;
+    }
+    return this.finishRun();
+  }
+
+  /**
    * Reconstruct tape at exact time step `t`.
    * Fast O(1) stepping or O(checkpoint) jump.
    */
   getTapeAtStep(t) {
     if (!this.history || t < 0 || t > this.history.totalSteps) return null;
-    const { totalSteps, headHistory, stateHistory, writeHistory, prevSymHistory, checkpoints, CHECKPOINT_INTERVAL, initialCells } = this.history;
+    const { totalSteps, headHistory, stateHistory, writeHistory, checkpoints, CHECKPOINT_INTERVAL, initialCells } = this.history;
 
-    // Find nearest checkpoint at or before t
+    if (!headHistory || t >= headHistory.length) return null;
+
     const chkStep = Math.floor(t / CHECKPOINT_INTERVAL) * CHECKPOINT_INTERVAL;
     const chk = checkpoints.get(chkStep);
 
@@ -416,13 +547,14 @@ class TuringMachineSimulator {
       }
     }
 
-    // Roll forward from checkpoint to t
     const startStep = chk ? chkStep : 0;
     for (let s = startStep; s < t; s++) {
-      const h = headHistory[s];
-      const w = writeHistory[s];
-      if (w === 0) tapeMap.delete(h);
-      else tapeMap.set(h, w);
+      if (s < writeHistory.length) {
+        const h = headHistory[s];
+        const w = writeHistory[s];
+        if (w === 0) tapeMap.delete(h);
+        else tapeMap.set(h, w);
+      }
     }
 
     const headPos = headHistory[t];
