@@ -223,6 +223,9 @@ class SpaceTimeRenderer {
     }
     const blankColor = colorLut[0];
 
+    const span = this.tapeSpan;
+    const minX = this.minTapeX;
+
     const { rowSnapshots, nextSnapshotRow } = this.sim.history || {};
     const totalCaptured = (nextSnapshotRow !== undefined) ? nextSnapshotRow : (rowSnapshots ? rowSnapshots.length : 0);
     const completedRows = isStreaming ? Math.min(totalCaptured, H_target) : H_target;
@@ -242,10 +245,11 @@ class SpaceTimeRenderer {
 
     // Map canvas row y (0..H_target-1) to snapshot index
     const mapYToSnap = (y) => {
+      if (totalCaptured <= 0) return 0;
       if (isStreaming || this.padToLimit || totalCaptured >= H_target) {
-        return Math.min(totalCaptured - 1, Math.floor((y / (H_target - 1)) * (H_target - 1)));
+        return Math.min(totalCaptured - 1, Math.floor((y / Math.max(1, H_target - 1)) * (H_target - 1)));
       }
-      return Math.min(totalCaptured - 1, Math.floor((y / (H_target - 1)) * (totalCaptured - 1)));
+      return Math.min(totalCaptured - 1, Math.floor((y / Math.max(1, H_target - 1)) * Math.max(1, totalCaptured - 1)));
     };
 
     for (let y = 0; y < completedRows; y++) {

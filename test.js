@@ -124,4 +124,48 @@ console.log('🧪 Starting Turing Machine Simulator Test Suite...\n');
   assert(stripes > 100, 'BB(5) must produce period-3 stripes between parabolas');
 }
 
+// 11. Renderer Runtime Verification (Streaming & Finished buildDiagram)
+{
+  function createMockCanvas() {
+    return {
+      width: 512, height: 768, clientWidth: 512, clientHeight: 768,
+      getContext: () => ({
+        createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
+        putImageData: () => {}, drawImage: () => {}, fillRect: () => {}, strokeRect: () => {},
+        beginPath: () => {}, moveTo: () => {}, lineTo: () => {}, stroke: () => {},
+        save: () => {}, restore: () => {}, scale: () => {}, translate: () => {}, fillText: () => {},
+      }),
+      addEventListener: () => {},
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 512, height: 768 }),
+    };
+  }
+  global.document = { createElement: (tag) => tag === 'canvas' ? createMockCanvas() : {} };
+  global.window = { devicePixelRatio: 1, addEventListener: () => {} };
+
+  const fs = require('fs');
+  const vm = require('vm');
+  vm.runInThisContext(fs.readFileSync('./renderer.js', 'utf8'));
+
+  const sim = new TuringMachineSimulator(TuringMachineSimulator.parseBBChallenge('1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA'));
+  const mockCanvas = createMockCanvas();
+  const renderer = new SpaceTimeRenderer(mockCanvas);
+
+  sim.initRun(1000000);
+  sim.stepChunk(50000);
+  renderer.buildDiagram(sim, true);
+  renderer.render();
+
+  sim.finishRun();
+  renderer.buildDiagram(sim, false);
+  renderer.render();
+
+  renderer.zoom = 2.0;
+  renderer.render();
+
+  renderer.showTrajectory = true;
+  renderer.render();
+
+  console.log('[PASS] SpaceTimeRenderer: streaming, finished, zoom, and trajectory rendering verified without errors');
+}
+
 console.log('\n🎉 ALL TESTS PASSED SUCCESSFULLY!');
