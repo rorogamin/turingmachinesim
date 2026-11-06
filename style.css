@@ -354,11 +354,18 @@ label {
 }
 
 /* Quick tape buttons */
-.quick-tape-btns {
+.quick-tape-btns, .quick-step-btns {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 5px;
   margin-top: 6px;
+}
+
+.quick-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 500;
 }
 
 .pill-btn {

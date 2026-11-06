@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnActual = document.getElementById('btn-actual');
   const btnExport = document.getElementById('btn-export');
   const toggleTrajectory = document.getElementById('toggle-trajectory');
+  const togglePadLimit = document.getElementById('toggle-pad-limit');
   const framingSelect = document.getElementById('framing-select');
 
   // Stats Elements
@@ -386,7 +387,11 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const maxSteps = Math.min(Math.max(1, parseInt(maxStepsInput.value, 10) || 5000), 500000);
+    // Parse step limit (supports arbitrary size without restriction, strips commas)
+    const rawVal = String(maxStepsInput.value || '').replace(/,/g, '').trim();
+    const parsedLimit = parseInt(rawVal, 10);
+    const maxSteps = Math.max(1, isNaN(parsedLimit) ? 500 : parsedLimit);
+
     const headOffset = parseInt(headPosInput.value, 10) || 0;
     const startTape = startTapeInput.value;
     const startState = startStateSelect.value || 'A';
@@ -395,8 +400,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const stats = simulator.run(maxSteps);
 
     // Update Stats Display
-    statSteps.textContent = stats.totalSteps.toLocaleString();
-    statStatus.textContent = stats.halted ? `Halted (${stats.haltReason})` : 'Limit Reached';
+    if (stats.halted) {
+      statSteps.textContent = `${stats.totalSteps.toLocaleString()} (halted)`;
+      statStatus.textContent = `Halted at step ${stats.totalSteps.toLocaleString()}`;
+      statStatus.title = `Halted at step ${stats.totalSteps} (step limit was ${maxSteps.toLocaleString()})`;
+    } else {
+      statSteps.textContent = `${stats.totalSteps.toLocaleString()} / ${maxSteps.toLocaleString()}`;
+      statStatus.textContent = 'Step Limit Reached';
+      statStatus.title = `Reached step limit of ${maxSteps.toLocaleString()}`;
+    }
     statStatus.className = stats.halted ? 'badge badge-halted' : 'badge badge-running';
     statNonzeros.textContent = stats.finalNonZeros.toLocaleString();
     statSpan.textContent = `[${stats.minX}, ${stats.maxX}] (${stats.maxX - stats.minX + 1} cells)`;
@@ -405,6 +417,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Build Spacetime Diagram (512 wide x 768 tall, end of nonzeros)
     renderer.framingMode = framingSelect ? framingSelect.value : 'nonzeros';
+    renderer.padToLimit = togglePadLimit ? togglePadLimit.checked : false;
     renderer.buildDiagram(simulator);
     renderer.fitView('fit');
 
@@ -652,6 +665,39 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
   }
+
+  if (togglePadLimit) {
+    togglePadLimit.addEventListener('change', (e) => {
+      renderer.padToLimit = e.target.checked;
+      if (simulator && simulator.history) {
+        renderer.buildDiagram(simulator);
+        renderer.render();
+      }
+    });
+  }
+
+  // Step limit input listeners (Enter key & change event)
+  maxStepsInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      runSimulation();
+    }
+  });
+
+  maxStepsInput.addEventListener('change', () => {
+    runSimulation();
+  });
+
+  // Step limit quick pill buttons
+  document.querySelectorAll('.step-pill').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const steps = e.target.getAttribute('data-steps');
+      if (steps) {
+        maxStepsInput.value = steps;
+        runSimulation();
+      }
+    });
+  });
 
   btnFit.addEventListener('click', () => renderer.fitView('fit'));
   if (btnActual) btnActual.addEventListener('click', () => renderer.fitView('actual'));

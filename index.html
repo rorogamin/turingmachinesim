@@ -143,8 +143,8 @@
 
             <div class="form-row">
               <div class="form-group half">
-                <label for="max-steps">Max Steps:</label>
-                <input type="number" id="max-steps" class="styled-input" value="500" min="1" max="500000" step="100">
+                <label for="max-steps">Step Limit:</label>
+                <input type="text" id="max-steps" class="styled-input mono-font" value="500" placeholder="e.g. 500 or 100000">
               </div>
               <div class="form-group half">
                 <label for="framing-select">Framing:</label>
@@ -155,11 +155,31 @@
               </div>
             </div>
 
-            <div class="form-group">
-              <label class="checkbox-label" title="Overlay head trajectory path on diagram">
-                <input type="checkbox" id="toggle-trajectory">
-                <span>Show Head Trajectory Line</span>
-              </label>
+            <!-- Quick Step Limit buttons -->
+            <div class="quick-step-btns">
+              <span class="quick-label">Limits:</span>
+              <button type="button" class="pill-btn step-pill" data-steps="100">100</button>
+              <button type="button" class="pill-btn step-pill" data-steps="500">500</button>
+              <button type="button" class="pill-btn step-pill" data-steps="1000">1K</button>
+              <button type="button" class="pill-btn step-pill" data-steps="10000">10K</button>
+              <button type="button" class="pill-btn step-pill" data-steps="100000">100K</button>
+              <button type="button" class="pill-btn step-pill" data-steps="1000000">1M</button>
+              <button type="button" class="pill-btn step-pill" data-steps="10000000">10M</button>
+            </div>
+
+            <div class="form-row" style="margin-top: 8px;">
+              <div class="form-group half">
+                <label class="checkbox-label" title="Overlay head trajectory path on diagram">
+                  <input type="checkbox" id="toggle-trajectory">
+                  <span>Head Path Line</span>
+                </label>
+              </div>
+              <div class="form-group half">
+                <label class="checkbox-label" title="Extend diagram vertical height to the full Step Limit even if halted early">
+                  <input type="checkbox" id="toggle-pad-limit">
+                  <span>Pad to Limit</span>
+                </label>
+              </div>
             </div>
           </div>
         </div>

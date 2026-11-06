@@ -30,6 +30,7 @@ class SpaceTimeRenderer {
 
     // Framing mode: 'nonzeros' (the end of the nonzeros is the full diagram) vs 'all'
     this.framingMode = 'nonzeros';
+    this.padToLimit = false; // Option to extend diagram height to step limit even if halted early
 
     // Theme definitions
     this.themes = {
@@ -172,7 +173,9 @@ class SpaceTimeRenderer {
     const numSymbols = this.sim.spec.numSymbols;
     const maxSymbol = Math.max(1, numSymbols - 1);
 
-    this.totalSteps = totalSteps;
+    const maxLimit = (this.sim.stats && this.sim.stats.maxStepsLimit) ? this.sim.stats.maxStepsLimit : totalSteps;
+    const effectiveSteps = (this.padToLimit && maxLimit > totalSteps) ? Math.min(maxLimit, 500000) : totalSteps;
+    this.totalSteps = effectiveSteps;
 
     // "The end of the nonzeros is the full diagram":
     // The diagram boundaries horizontally are defined by the non-zero symbols at the end
@@ -192,7 +195,7 @@ class SpaceTimeRenderer {
 
     this.tapeSpan = this.maxTapeX - this.minTapeX + 1;
     const W_cells = this.tapeSpan;
-    const H_steps = totalSteps + 1;
+    const H_steps = effectiveSteps + 1;
 
     // 1. Build unscaled 1-cell-per-pixel buffer
     this.rawCanvas.width = W_cells;
@@ -227,10 +230,12 @@ class SpaceTimeRenderer {
       const currRowStart = t * W_cells;
       pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W_cells);
 
-      const writePos = headHistory[t - 1] - this.minTapeX;
-      const writtenSym = writeHistory[t - 1];
-      if (writePos >= 0 && writePos < W_cells) {
-        pixelBuffer[currRowStart + writePos] = colorLut[writtenSym >= numSymbols ? numSymbols : writtenSym];
+      if (t - 1 < totalSteps) {
+        const writePos = headHistory[t - 1] - this.minTapeX;
+        const writtenSym = writeHistory[t - 1];
+        if (writePos >= 0 && writePos < W_cells) {
+          pixelBuffer[currRowStart + writePos] = colorLut[writtenSym >= numSymbols ? numSymbols : writtenSym];
+        }
       }
     }
 

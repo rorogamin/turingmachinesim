@@ -378,6 +378,7 @@ class TuringMachineSimulator {
 
     this.stats = {
       totalSteps: step,
+      maxStepsLimit: maxSteps,
       halted,
       haltReason,
       minX: minHeadPos,
