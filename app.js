@@ -280,6 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
             isUndefined: isUndef,
           };
           syncTableToBBString();
+          runSimulation();
         };
 
         writeSel.addEventListener('change', updateFromCell);
@@ -330,6 +331,7 @@ document.addEventListener('DOMContentLoaded', () => {
     syncTableToBBString();
     updateStartStateDropdown(newCount);
     renderTableFromSpec(simulator.spec);
+    runSimulation();
   });
 
   btnRemoveState.addEventListener('click', () => {
@@ -342,6 +344,7 @@ document.addEventListener('DOMContentLoaded', () => {
     syncTableToBBString();
     updateStartStateDropdown(cur - 1);
     renderTableFromSpec(simulator.spec);
+    runSimulation();
   });
 
   // Add / Remove Symbol
@@ -361,6 +364,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     syncTableToBBString();
     renderTableFromSpec(simulator.spec);
+    runSimulation();
   });
 
   btnRemoveSymbol.addEventListener('click', () => {
@@ -372,6 +376,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     syncTableToBBString();
     renderTableFromSpec(simulator.spec);
+    runSimulation();
   });
 
   // Streaming State
@@ -739,14 +744,27 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isExploreMode) updateExploreView(currentStep);
   });
 
+  let bbDebounceTimer = null;
   bbInput.addEventListener('input', () => {
     try {
       const spec = TuringMachineSimulator.parseBBChallenge(bbInput.value.trim());
       simulator.spec = spec;
       updateStartStateDropdown(spec.numStates);
       renderTableFromSpec(spec);
+      clearTimeout(bbDebounceTimer);
+      bbDebounceTimer = setTimeout(() => {
+        runSimulation();
+      }, 500);
     } catch (e) {
       // Ignored while typing
+    }
+  });
+
+  bbInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      clearTimeout(bbDebounceTimer);
+      runSimulation();
     }
   });
 
@@ -806,21 +824,25 @@ document.addEventListener('DOMContentLoaded', () => {
   tapeQuickBlank.addEventListener('click', () => {
     startTapeInput.value = '0';
     headPosInput.value = '0';
+    runSimulation();
   });
 
   tapeQuickUnary.addEventListener('click', () => {
     startTapeInput.value = '11111';
     headPosInput.value = '0';
+    runSimulation();
   });
 
   tapeQuickBinary.addEventListener('click', () => {
     startTapeInput.value = '101010'; // 42 in binary
     headPosInput.value = '0';
+    runSimulation();
   });
 
   tapeQuickAlternating.addEventListener('click', () => {
     startTapeInput.value = '10101010';
     headPosInput.value = '0';
+    runSimulation();
   });
 
   tapeQuickRandom.addEventListener('click', () => {
@@ -831,7 +853,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     startTapeInput.value = s;
     headPosInput.value = '10';
+    runSimulation();
   });
+
+  startTapeInput.addEventListener('change', runSimulation);
+  headPosInput.addEventListener('change', runSimulation);
+  startStateSelect.addEventListener('change', runSimulation);
 
   // Tab switching (bbchallenge string vs table)
   const tabBtnString = document.getElementById('tab-btn-string');

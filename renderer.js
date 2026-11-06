@@ -177,14 +177,13 @@ class SpaceTimeRenderer {
     const effectiveSteps = (this.padToLimit && maxLimit > totalSteps) ? Math.min(maxLimit, 500000) : totalSteps;
     this.totalSteps = effectiveSteps;
 
-    // "The end of the nonzeros is the full diagram":
-    // The diagram boundaries horizontally are defined by the non-zero symbols at the end
-    if (this.framingMode === 'nonzeros' && minNonZeroX !== undefined && maxNonZeroX !== undefined) {
+    // Horizontal tape bounds
+    if (this.framingMode === 'nonzeros' && minNonZeroX !== undefined && maxNonZeroX !== undefined && minNonZeroX <= maxNonZeroX) {
       this.minTapeX = minNonZeroX;
       this.maxTapeX = maxNonZeroX;
     } else {
-      this.minTapeX = minHeadPos;
-      this.maxTapeX = maxHeadPos;
+      this.minTapeX = minHeadPos !== undefined ? minHeadPos : 0;
+      this.maxTapeX = maxHeadPos !== undefined ? maxHeadPos : 0;
     }
 
     // Ensure span is at least 1 cell
@@ -195,13 +194,16 @@ class SpaceTimeRenderer {
 
     this.tapeSpan = this.maxTapeX - this.minTapeX + 1;
     const W_cells = this.tapeSpan;
-    const H_steps = effectiveSteps + 1;
 
-    // 1. Build unscaled 1-cell-per-pixel buffer
+    // Cap vertical buffer height to TARGET_HEIGHT (768) to prevent browser canvas height overflow (>32767)
+    const H_target = this.TARGET_HEIGHT;
+    const H_raw = Math.min(effectiveSteps + 1, H_target);
+
+    // 1. Build unscaled buffer (at most 768 rows)
     this.rawCanvas.width = W_cells;
-    this.rawCanvas.height = H_steps;
+    this.rawCanvas.height = H_raw;
 
-    const imgData = this.rawCtx.createImageData(W_cells, H_steps);
+    const imgData = this.rawCtx.createImageData(W_cells, H_raw);
     const pixelBuffer = new Uint32Array(imgData.data.buffer);
 
     // Color lookup table
@@ -224,18 +226,43 @@ class SpaceTimeRenderer {
       }
     }
 
-    // Incremental row generation using copyWithin
-    for (let t = 1; t < H_steps; t++) {
-      const prevRowStart = (t - 1) * W_cells;
-      const currRowStart = t * W_cells;
-      pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W_cells);
+    const historyLen = writeHistory ? writeHistory.length : 0;
 
-      if (t - 1 < totalSteps) {
-        const writePos = headHistory[t - 1] - this.minTapeX;
-        const writtenSym = writeHistory[t - 1];
-        if (writePos >= 0 && writePos < W_cells) {
-          pixelBuffer[currRowStart + writePos] = colorLut[writtenSym >= numSymbols ? numSymbols : writtenSym];
+    if (effectiveSteps + 1 <= H_target) {
+      // 1-to-1 exact row per step
+      for (let t = 1; t < H_raw; t++) {
+        const prevRowStart = (t - 1) * W_cells;
+        const currRowStart = t * W_cells;
+        pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W_cells);
+
+        const stepIdx = t - 1;
+        if (stepIdx < totalSteps && stepIdx < historyLen) {
+          const writePos = headHistory[stepIdx] - this.minTapeX;
+          const writtenSym = writeHistory[stepIdx];
+          if (writePos >= 0 && writePos < W_cells) {
+            pixelBuffer[currRowStart + writePos] = colorLut[writtenSym >= numSymbols ? numSymbols : writtenSym];
+          }
         }
+      }
+    } else {
+      // Large run (> 768 steps): sample exactly H_raw rows, integrating all intermediate writes
+      let lastStep = 0;
+      for (let y = 1; y < H_raw; y++) {
+        const currStep = Math.min(effectiveSteps, Math.floor((y / (H_raw - 1)) * effectiveSteps));
+        const prevRowStart = (y - 1) * W_cells;
+        const currRowStart = y * W_cells;
+        pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W_cells);
+
+        // Apply all writes in [lastStep, currStep)
+        const limitS = Math.min(currStep, totalSteps, historyLen);
+        for (let s = lastStep; s < limitS; s++) {
+          const writePos = headHistory[s] - this.minTapeX;
+          const writtenSym = writeHistory[s];
+          if (writePos >= 0 && writePos < W_cells) {
+            pixelBuffer[currRowStart + writePos] = colorLut[writtenSym >= numSymbols ? numSymbols : writtenSym];
+          }
+        }
+        lastStep = currStep;
       }
     }
 
@@ -251,7 +278,7 @@ class SpaceTimeRenderer {
 
     this.offscreenCtx.drawImage(
       this.rawCanvas,
-      0, 0, W_cells, H_steps,
+      0, 0, W_cells, H_raw,
       0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT
     );
   }
