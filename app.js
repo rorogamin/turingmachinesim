@@ -93,7 +93,7 @@ document.addEventListener('DOMContentLoaded', () => {
     'bb5': {
       name: 'BB(5) Champion (Marxen & Buntrock - 47M steps)',
       code: '1RB1LC_1RC1RB_1RD0LE_1LA1LD_1RZ0LA',
-      steps: 15000,
+      steps: 47176870,
       tape: '0',
     },
     'bb23': {
@@ -461,10 +461,10 @@ document.addEventListener('DOMContentLoaded', () => {
         statTime.textContent = `${(now - startTime).toFixed(1)} ms`;
         statSpan.textContent = `[${simulator.history.minHeadPos}, ${simulator.history.maxHeadPos}]`;
 
-        // Live stream diagram update
+        // Live stream diagram update (draws completed rows downward with frontier indicator)
         renderer.framingMode = framingSelect ? framingSelect.value : 'nonzeros';
         renderer.padToLimit = togglePadLimit ? togglePadLimit.checked : false;
-        renderer.buildDiagram(simulator);
+        renderer.buildDiagram(simulator, true);
         renderer.render();
 
         exploreSlider.max = Math.max(1, currentStep);
@@ -518,7 +518,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Final high-res 512x768 render
     renderer.framingMode = framingSelect ? framingSelect.value : 'nonzeros';
     renderer.padToLimit = togglePadLimit ? togglePadLimit.checked : false;
-    renderer.buildDiagram(simulator);
+    renderer.buildDiagram(simulator, false);
     renderer.fitView('fit');
 
     // Setup Explore Slider

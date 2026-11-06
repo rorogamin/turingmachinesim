@@ -164,8 +164,9 @@ class SpaceTimeRenderer {
   /**
    * Build the 512 wide x 768 tall space-time diagram image.
    * Framed so the end of the non-zeros is the full diagram.
+   * Supports streaming rendering with progress frontier.
    */
-  buildDiagram(sim = null) {
+  buildDiagram(sim = null, isStreaming = false) {
     if (sim) this.sim = sim;
     if (!this.sim || !this.sim.history) return;
 
@@ -174,11 +175,11 @@ class SpaceTimeRenderer {
     const maxSymbol = Math.max(1, numSymbols - 1);
 
     const maxLimit = (this.sim.stats && this.sim.stats.maxStepsLimit) ? this.sim.stats.maxStepsLimit : totalSteps;
-    const effectiveSteps = (this.padToLimit && maxLimit > totalSteps) ? Math.min(maxLimit, 500000) : totalSteps;
+    const effectiveSteps = (this.padToLimit && maxLimit > totalSteps) ? Math.min(maxLimit, 50000000) : totalSteps;
     this.totalSteps = effectiveSteps;
 
     // Horizontal tape bounds
-    if (this.framingMode === 'nonzeros' && minNonZeroX !== undefined && maxNonZeroX !== undefined && minNonZeroX <= maxNonZeroX) {
+    if (!isStreaming && this.framingMode === 'nonzeros' && minNonZeroX !== undefined && maxNonZeroX !== undefined && minNonZeroX <= maxNonZeroX) {
       this.minTapeX = minNonZeroX;
       this.maxTapeX = maxNonZeroX;
     } else {
@@ -194,10 +195,17 @@ class SpaceTimeRenderer {
 
     this.tapeSpan = this.maxTapeX - this.minTapeX + 1;
     const W_cells = this.tapeSpan;
+    const H_target = this.TARGET_HEIGHT; // 768
 
-    // Cap vertical buffer height to TARGET_HEIGHT (768) to prevent browser canvas height overflow (>32767)
-    const H_target = this.TARGET_HEIGHT;
-    const H_raw = Math.min(effectiveSteps + 1, H_target);
+    // If streaming, compute how many rows of the 768-pixel height are completed so far
+    let activeRows = H_target;
+    if (isStreaming && maxLimit > 0) {
+      activeRows = Math.max(1, Math.min(H_target, Math.floor((totalSteps / maxLimit) * H_target)));
+    } else if (effectiveSteps + 1 < H_target) {
+      activeRows = effectiveSteps + 1;
+    }
+
+    const H_raw = Math.min(activeRows, H_target);
 
     // 1. Build unscaled buffer (at most 768 rows)
     this.rawCanvas.width = W_cells;
@@ -228,7 +236,7 @@ class SpaceTimeRenderer {
 
     const historyLen = writeHistory ? writeHistory.length : 0;
 
-    if (effectiveSteps + 1 <= H_target) {
+    if (effectiveSteps + 1 <= H_target && !isStreaming) {
       // 1-to-1 exact row per step
       for (let t = 1; t < H_raw; t++) {
         const prevRowStart = (t - 1) * W_cells;
@@ -245,10 +253,11 @@ class SpaceTimeRenderer {
         }
       }
     } else {
-      // Large run (> 768 steps): sample exactly H_raw rows, integrating all intermediate writes
+      // Large run (> 768 steps) or streaming: sample rows smoothly across steps
+      const stepsToSample = isStreaming ? totalSteps : effectiveSteps;
       let lastStep = 0;
       for (let y = 1; y < H_raw; y++) {
-        const currStep = Math.min(effectiveSteps, Math.floor((y / (H_raw - 1)) * effectiveSteps));
+        const currStep = Math.min(stepsToSample, Math.floor((y / (H_raw - 1)) * stepsToSample));
         const prevRowStart = (y - 1) * W_cells;
         const currRowStart = y * W_cells;
         pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W_cells);
@@ -268,7 +277,7 @@ class SpaceTimeRenderer {
 
     this.rawCtx.putImageData(imgData, 0, 0);
 
-    // 2. Scale exactly to 512 wide x 768 tall (no grid, crisp nearest-neighbor)
+    // 2. Clear offscreen 512x768 canvas and draw
     this.offscreenCanvas.width = this.TARGET_WIDTH;
     this.offscreenCanvas.height = this.TARGET_HEIGHT;
 
@@ -276,11 +285,27 @@ class SpaceTimeRenderer {
     this.offscreenCtx.fillStyle = theme.background;
     this.offscreenCtx.fillRect(0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT);
 
-    this.offscreenCtx.drawImage(
-      this.rawCanvas,
-      0, 0, W_cells, H_raw,
-      0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT
-    );
+    if (isStreaming && maxLimit > 0) {
+      // During streaming, draw completed rows from top down
+      const drawnHeight = Math.max(1, Math.min(this.TARGET_HEIGHT, Math.floor((activeRows / H_target) * this.TARGET_HEIGHT)));
+      this.offscreenCtx.drawImage(
+        this.rawCanvas,
+        0, 0, W_cells, H_raw,
+        0, 0, this.TARGET_WIDTH, drawnHeight
+      );
+
+      // Draw subtle progress scanline at the frontier
+      if (drawnHeight < this.TARGET_HEIGHT) {
+        this.offscreenCtx.fillStyle = theme.markerColor;
+        this.offscreenCtx.fillRect(0, drawnHeight, this.TARGET_WIDTH, 2);
+      }
+    } else {
+      this.offscreenCtx.drawImage(
+        this.rawCanvas,
+        0, 0, W_cells, H_raw,
+        0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT
+      );
+    }
   }
 
   /**

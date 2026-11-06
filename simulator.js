@@ -246,8 +246,8 @@ class TuringMachineSimulator {
       }
     }
 
-    // Allocate history arrays (cap at 5M steps to prevent runaway memory on huge runs)
-    const historyCap = Math.min(maxSteps, 5000000);
+    // Allocate history arrays (supports up to 50M steps for full BB5 verification)
+    const historyCap = Math.min(maxSteps, 50000000);
     const headHistory = new Int32Array(historyCap + 1);
     const stateHistory = new Uint8Array(historyCap + 1);
     const writeHistory = new Uint8Array(historyCap);
