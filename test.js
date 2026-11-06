@@ -127,17 +127,20 @@ console.log('🧪 Starting Turing Machine Simulator Test Suite...\n');
 // 11. Renderer Runtime Verification (Streaming & Finished buildDiagram)
 {
   function createMockCanvas() {
-    return {
+    const canvasObj = {
       width: 512, height: 768, clientWidth: 512, clientHeight: 768,
+      lastImageData: null,
       getContext: () => ({
         createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
-        putImageData: () => {}, drawImage: () => {}, fillRect: () => {}, strokeRect: () => {},
+        putImageData: (img) => { canvasObj.lastImageData = img; },
+        drawImage: () => {}, fillRect: () => {}, strokeRect: () => {},
         beginPath: () => {}, moveTo: () => {}, lineTo: () => {}, stroke: () => {},
         save: () => {}, restore: () => {}, scale: () => {}, translate: () => {}, fillText: () => {},
       }),
       addEventListener: () => {},
       getBoundingClientRect: () => ({ left: 0, top: 0, width: 512, height: 768 }),
     };
+    return canvasObj;
   }
   global.document = { createElement: (tag) => tag === 'canvas' ? createMockCanvas() : {} };
   global.window = { devicePixelRatio: 1, addEventListener: () => {} };
@@ -164,6 +167,24 @@ console.log('🧪 Starting Turing Machine Simulator Test Suite...\n');
 
   renderer.showTrajectory = true;
   renderer.render();
+
+  // Verify solid cell blocks for small runs (e.g. BB4)
+  const simBB4 = new TuringMachineSimulator(TuringMachineSimulator.parseBBChallenge('1RB1LB_1LA0LC_1RZ1LD_1RD0RA'));
+  simBB4.run(500);
+  renderer.buildDiagram(simBB4, false);
+  const bufBB4 = new Uint32Array((renderer.offscreenCanvas.lastImageData || mockCanvas.lastImageData).data.buffer);
+  let maxWhiteRun = 0;
+  let currRun = 0;
+  for (let x = 0; x < 512; x++) {
+    if (bufBB4[500 * 512 + x] !== 0xFF000000) {
+      currRun++;
+      if (currRun > maxWhiteRun) maxWhiteRun = currRun;
+    } else {
+      currRun = 0;
+    }
+  }
+  assert(maxWhiteRun >= 30, `BB(4) cells must render as solid blocks (got max run of ${maxWhiteRun}px, expected >= 30px)`);
+  console.log(`[PASS] SpaceTimeRenderer: solid cell block rendering confirmed (max continuous block = ${maxWhiteRun}px)`);
 
   console.log('[PASS] SpaceTimeRenderer: streaming, finished, zoom, and trajectory rendering verified without errors');
 }

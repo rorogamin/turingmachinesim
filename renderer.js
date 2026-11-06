@@ -256,16 +256,24 @@ class SpaceTimeRenderer {
           rawPixels[rowOffsetRaw + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
         }
 
-        // 2. Binned pixels with density mapping
-        for (let x = 0; x < W_target; x++) {
-          const cellStart = minX + Math.floor((x / W_target) * span);
-          const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
-          const count = Math.max(1, cellEnd - cellStart);
-          let sum = 0;
-          for (let c = cellStart; c < cellEnd; c++) {
-            sum += info.tapeMap.get(c) || 0;
+        // 2. Pixels with density mapping or solid cells
+        if (span <= W_target) {
+          for (let x = 0; x < W_target; x++) {
+            const c = minX + Math.floor((x / W_target) * span);
+            const sym = info.tapeMap.get(c) || 0;
+            binnedPixels[rowOffsetBinned + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
           }
-          binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+        } else {
+          for (let x = 0; x < W_target; x++) {
+            const cellStart = minX + Math.floor((x / W_target) * span);
+            const cellEnd = minX + Math.max(cellStart - minX + 1, Math.floor(((x + 1) / W_target) * span));
+            const count = cellEnd - cellStart;
+            let sum = 0;
+            for (let c = cellStart; c < cellEnd; c++) {
+              sum += info.tapeMap.get(c) || 0;
+            }
+            binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+          }
         }
       }
 
@@ -306,17 +314,26 @@ class SpaceTimeRenderer {
         rawPixels[rowOffsetRaw + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
       }
 
-      // 2. Binned area-averaged pixels (preserves period-3 stripes between parabolas)
-      for (let x = 0; x < W_target; x++) {
-        const cellStart = minX + Math.floor((x / W_target) * span);
-        const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
-        const count = Math.max(1, cellEnd - cellStart);
-        let sum = 0;
-        for (let c = cellStart; c < cellEnd; c++) {
+      // 2. Pixels with density mapping or solid cells (preserves period-3 stripes between parabolas)
+      if (span <= W_target) {
+        for (let x = 0; x < W_target; x++) {
+          const c = minX + Math.floor((x / W_target) * span);
           const offset = c - minP;
-          if (offset >= 0 && offset < sliceLen) sum += slice[offset];
+          const sym = (offset >= 0 && offset < sliceLen) ? slice[offset] : 0;
+          binnedPixels[rowOffsetBinned + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
         }
-        binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+      } else {
+        for (let x = 0; x < W_target; x++) {
+          const cellStart = minX + Math.floor((x / W_target) * span);
+          const cellEnd = minX + Math.max(cellStart - minX + 1, Math.floor(((x + 1) / W_target) * span));
+          const count = cellEnd - cellStart;
+          let sum = 0;
+          for (let c = cellStart; c < cellEnd; c++) {
+            const offset = c - minP;
+            if (offset >= 0 && offset < sliceLen) sum += slice[offset];
+          }
+          binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+        }
       }
     }
 
