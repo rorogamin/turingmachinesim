@@ -223,190 +223,70 @@ class SpaceTimeRenderer {
     }
     const blankColor = colorLut[0];
 
-    if (effectiveSteps + 1 <= H_target && !isStreaming) {
-      // 1-to-1 exact row per step for small runs (BB2, BB3, BB4, etc.)
-      const H_raw = effectiveSteps + 1;
-      this.rawCanvas.width = W_cells;
-      this.rawCanvas.height = H_raw;
+    const { rowSnapshots, nextSnapshotRow } = this.sim.history || {};
+    const totalCaptured = (nextSnapshotRow !== undefined) ? nextSnapshotRow : (rowSnapshots ? rowSnapshots.length : 0);
+    const completedRows = isStreaming ? Math.min(totalCaptured, H_target) : H_target;
 
-      const imgData = this.rawCtx.createImageData(W_cells, H_raw);
-      const pixelBuffer = new Uint32Array(imgData.data.buffer);
-      pixelBuffer.fill(blankColor, 0, W_cells);
-
-      for (const cell of initialCells) {
-        const col = cell.pos - this.minTapeX;
-        if (col >= 0 && col < W_cells) {
-          const sym = cell.symbol;
-          pixelBuffer[col] = colorLut[sym >= numSymbols ? numSymbols : sym];
-        }
-      }
-
-      const historyLen = writeHistory ? writeHistory.length : 0;
-      for (let t = 1; t < H_raw; t++) {
-        const prevRowStart = (t - 1) * W_cells;
-        const currRowStart = t * W_cells;
-        pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W_cells);
-
-        const stepIdx = t - 1;
-        if (stepIdx < totalSteps && stepIdx < historyLen) {
-          const writePos = headHistory[stepIdx] - this.minTapeX;
-          const writtenSym = writeHistory[stepIdx];
-          if (writePos >= 0 && writePos < W_cells) {
-            pixelBuffer[currRowStart + writePos] = colorLut[writtenSym >= numSymbols ? numSymbols : writtenSym];
-          }
-        }
-      }
-      this.rawCtx.putImageData(imgData, 0, 0);
-
-      this.offscreenCanvas.width = W_target;
-      this.offscreenCanvas.height = H_target;
-      this.offscreenCtx.imageSmoothingEnabled = false;
-      this.offscreenCtx.fillStyle = theme.background;
-      this.offscreenCtx.fillRect(0, 0, W_target, H_target);
-      this.offscreenCtx.drawImage(this.rawCanvas, 0, 0, W_cells, H_raw, 0, 0, W_target, H_target);
-      return;
-    }
-
-    if (!isStreaming) {
-      // Completed large run: Fast binned tape sampling across the 768 rows
-      // Re-executes tape without allocating heavy history arrays (<0.6s for 47M steps)
-      this.offscreenCanvas.width = W_target;
-      this.offscreenCanvas.height = H_target;
-      const offImgData = this.offscreenCtx.createImageData(W_target, H_target);
-      const binnedPixels = new Uint32Array(offImgData.data.buffer);
-
-      const W_raw = Math.min(W_cells, 16384);
-      this.rawCanvas.width = W_raw;
-      this.rawCanvas.height = H_target;
-      const rawImgData = this.rawCtx.createImageData(W_raw, H_target);
-      const rawPixels = new Uint32Array(rawImgData.data.buffer);
-
-      const replay = new TuringMachineSimulator(this.sim.spec);
-      replay.setInitialTape(this.sim.initialTapeString, this.sim.initialHeadPos, this.sim.initialState);
-      const ctx = replay.initRun(this.totalSteps);
-
-      const rowSteps = new Int32Array(H_target);
-      for (let y = 0; y < H_target; y++) {
-        rowSteps[y] = Math.min(this.totalSteps, Math.floor((y / (H_target - 1)) * this.totalSteps));
-      }
-
-      let currRow = 0;
-      const minX = this.minTapeX;
-      const span = this.tapeSpan;
-
-      while (ctx.step <= this.totalSteps && !ctx.halted) {
-        while (currRow < H_target && ctx.step >= rowSteps[currRow]) {
-          const origin = ctx.tapeOrigin;
-          const tape = ctx.tape;
-          const cap = ctx.tapeCapacity;
-          const rowOffsetBinned = currRow * W_target;
-          const rowOffsetRaw = currRow * W_raw;
-
-          // 1. Raw buffer for crisp zoomed-in inspection
-          for (let x = 0; x < W_raw; x++) {
-            const c = minX + Math.floor((x / W_raw) * span);
-            const idx = origin + c;
-            const sym = (idx >= 0 && idx < cap) ? tape[idx] : 0;
-            rawPixels[rowOffsetRaw + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
-          }
-
-          // 2. Binned buffer with area-averaging (preserves period-3 stripes between parabolas)
-          for (let x = 0; x < W_target; x++) {
-            const cellStart = minX + Math.floor((x / W_target) * span);
-            const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
-            const count = Math.max(1, cellEnd - cellStart);
-            let sum = 0;
-            for (let c = cellStart; c < cellEnd; c++) {
-              const idx = origin + c;
-              if (idx >= 0 && idx < cap) sum += tape[idx];
-            }
-            binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
-          }
-          currRow++;
-        }
-
-        if (ctx.step >= this.totalSteps || ctx.halted) break;
-        const nextTarget = currRow < H_target ? rowSteps[currRow] : this.totalSteps;
-        const chunk = Math.max(1, Math.min(100000, nextTarget - ctx.step));
-        replay.stepChunk(chunk);
-      }
-
-      // Fill any remaining rows if halted early
-      while (currRow < H_target) {
-        const origin = ctx.tapeOrigin;
-        const tape = ctx.tape;
-        const cap = ctx.tapeCapacity;
-        const rowOffsetBinned = currRow * W_target;
-        const rowOffsetRaw = currRow * W_raw;
-
-        for (let x = 0; x < W_raw; x++) {
-          const c = minX + Math.floor((x / W_raw) * span);
-          const idx = origin + c;
-          const sym = (idx >= 0 && idx < cap) ? tape[idx] : 0;
-          rawPixels[rowOffsetRaw + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
-        }
-
-        for (let x = 0; x < W_target; x++) {
-          const cellStart = minX + Math.floor((x / W_target) * span);
-          const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
-          const count = Math.max(1, cellEnd - cellStart);
-          let sum = 0;
-          for (let c = cellStart; c < cellEnd; c++) {
-            const idx = origin + c;
-            if (idx >= 0 && idx < cap) sum += tape[idx];
-          }
-          binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
-        }
-        currRow++;
-      }
-
-      this.offscreenCtx.putImageData(offImgData, 0, 0);
-      this.rawCtx.putImageData(rawImgData, 0, 0);
-      return;
-    }
-
-    // Streaming mode: Live progress rendering
-    const activeRows = maxLimit > 0 ? Math.max(1, Math.min(H_target, Math.floor((totalSteps / maxLimit) * H_target))) : H_target;
     this.offscreenCanvas.width = W_target;
     this.offscreenCanvas.height = H_target;
+    const offImgData = this.offscreenCtx.createImageData(W_target, H_target);
+    const binnedPixels = new Uint32Array(offImgData.data.buffer);
+    binnedPixels.fill(blankColor);
 
-    const streamImgData = this.offscreenCtx.createImageData(W_target, activeRows);
-    const streamPixels = new Uint32Array(streamImgData.data.buffer);
-    streamPixels.fill(blankColor);
+    const W_raw = Math.min(span, 16384);
+    this.rawCanvas.width = W_raw;
+    this.rawCanvas.height = H_target;
+    const rawImgData = this.rawCtx.createImageData(W_raw, H_target);
+    const rawPixels = new Uint32Array(rawImgData.data.buffer);
+    rawPixels.fill(blankColor);
 
-    const runCtx = this.sim._runContext;
-    if (runCtx) {
-      const origin = runCtx.tapeOrigin;
-      const tape = runCtx.tape;
-      const cap = runCtx.tapeCapacity;
-      const minX = this.minTapeX;
-      const span = this.tapeSpan;
+    // Map canvas row y (0..H_target-1) to snapshot index
+    const mapYToSnap = (y) => {
+      if (isStreaming || this.padToLimit || totalCaptured >= H_target) {
+        return Math.min(totalCaptured - 1, Math.floor((y / (H_target - 1)) * (H_target - 1)));
+      }
+      return Math.min(totalCaptured - 1, Math.floor((y / (H_target - 1)) * (totalCaptured - 1)));
+    };
 
-      // Draw current tape across the completed rows
-      for (let y = 0; y < activeRows; y++) {
-        const rowOffset = y * W_target;
-        for (let x = 0; x < W_target; x++) {
-          const cellStart = minX + Math.floor((x / W_target) * span);
-          const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
-          const count = Math.max(1, cellEnd - cellStart);
-          let sum = 0;
-          for (let c = cellStart; c < cellEnd; c++) {
-            const idx = origin + c;
-            if (idx >= 0 && idx < cap) sum += tape[idx];
-          }
-          streamPixels[rowOffset + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
+    for (let y = 0; y < completedRows; y++) {
+      const snapIdx = mapYToSnap(y);
+      const snap = (rowSnapshots && snapIdx >= 0) ? rowSnapshots[snapIdx] : null;
+      if (!snap) continue;
+
+      const rowOffsetBinned = y * W_target;
+      const rowOffsetRaw = y * W_raw;
+      const { minP, slice } = snap;
+      const sliceLen = slice.length;
+
+      // 1. Raw discrete cells for crisp zoomed-in inspection
+      for (let x = 0; x < W_raw; x++) {
+        const c = minX + Math.floor((x / W_raw) * span);
+        const offset = c - minP;
+        const sym = (offset >= 0 && offset < sliceLen) ? slice[offset] : 0;
+        rawPixels[rowOffsetRaw + x] = colorLut[sym >= numSymbols ? numSymbols : sym];
+      }
+
+      // 2. Binned area-averaged pixels (preserves period-3 stripes between parabolas)
+      for (let x = 0; x < W_target; x++) {
+        const cellStart = minX + Math.floor((x / W_target) * span);
+        const cellEnd = minX + Math.floor(((x + 1) / W_target) * span);
+        const count = Math.max(1, cellEnd - cellStart);
+        let sum = 0;
+        for (let c = cellStart; c < cellEnd; c++) {
+          const offset = c - minP;
+          if (offset >= 0 && offset < sliceLen) sum += slice[offset];
         }
+        binnedPixels[rowOffsetBinned + x] = sum > 0 ? getDensityColor(sum / count) : blankColor;
       }
     }
 
-    this.offscreenCtx.fillStyle = theme.background;
-    this.offscreenCtx.fillRect(0, 0, W_target, H_target);
-    this.offscreenCtx.putImageData(streamImgData, 0, 0);
+    this.offscreenCtx.putImageData(offImgData, 0, 0);
+    this.rawCtx.putImageData(rawImgData, 0, 0);
 
-    // Subtle progress scanline at the frontier
-    if (activeRows < H_target) {
+    // If streaming, draw subtle progress scanline at the frontier
+    if (isStreaming && completedRows < H_target) {
       this.offscreenCtx.fillStyle = theme.markerColor;
-      this.offscreenCtx.fillRect(0, activeRows, W_target, 2);
+      this.offscreenCtx.fillRect(0, completedRows, W_target, 2);
     }
   }
 

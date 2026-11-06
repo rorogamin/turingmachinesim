@@ -275,6 +275,34 @@ class TuringMachineSimulator {
       checkpoints.set(s, { tapeSnap: snap, head: ctx.head - origin, state: ctx.state });
     };
 
+    // Precompute 768 row steps and snapshot buffer for streaming spacetime diagram
+    const TARGET_ROWS = 768;
+    const numRows = Math.min(maxSteps + 1, TARGET_ROWS);
+    const rowSteps = new Int32Array(numRows);
+    for (let y = 0; y < numRows; y++) {
+      rowSteps[y] = Math.min(maxSteps, Math.floor((y / Math.max(1, numRows - 1)) * maxSteps));
+    }
+    const rowSnapshots = new Array(numRows);
+
+    const captureRowSnapshot = () => {
+      const ctx = this._runContext;
+      if (!ctx) return;
+      while (ctx.nextSnapshotRow < ctx.numRows && ctx.step >= ctx.rowSteps[ctx.nextSnapshotRow]) {
+        const origin = ctx.tapeOrigin;
+        const minP = ctx.minHeadPos;
+        const maxP = ctx.maxHeadPos;
+        const len = Math.max(1, maxP - minP + 1);
+        const slice = new Uint8Array(len);
+        const start = origin + minP;
+        for (let i = 0; i < len; i++) {
+          const idx = start + i;
+          if (idx >= 0 && idx < ctx.tapeCapacity) slice[i] = ctx.tape[idx];
+        }
+        ctx.rowSnapshots[ctx.nextSnapshotRow] = { minP, maxP, slice };
+        ctx.nextSnapshotRow++;
+      }
+    };
+
     this._runContext = {
       spec,
       numStates,
@@ -301,12 +329,19 @@ class TuringMachineSimulator {
       CHECKPOINT_INTERVAL,
       checkpoints,
       saveCheckpoint,
+      TARGET_ROWS,
+      numRows,
+      rowSteps,
+      rowSnapshots,
+      nextSnapshotRow: 0,
+      captureRowSnapshot,
       startTime,
       halted: false,
       haltReason: null,
       initialCells,
     };
     saveCheckpoint(0);
+    captureRowSnapshot();
 
     this.history = {
       maxSteps,
@@ -322,6 +357,10 @@ class TuringMachineSimulator {
       checkpoints,
       CHECKPOINT_INTERVAL,
       initialCells,
+      rowSnapshots,
+      rowSteps,
+      nextSnapshotRow: 0,
+      numRows,
     };
 
     this.stats = {
@@ -439,6 +478,11 @@ class TuringMachineSimulator {
     ctx.maxHeadPos = maxHeadPos;
     ctx.step = step;
 
+    if (ctx.captureRowSnapshot) {
+      ctx.captureRowSnapshot();
+      this.history.nextSnapshotRow = ctx.nextSnapshotRow;
+    }
+
     // Update history wrapper
     this.history.totalSteps = step;
     this.history.minHeadPos = minHeadPos;
@@ -498,6 +542,25 @@ class TuringMachineSimulator {
     this.history.stateHistory = stateHistory.subarray(0, historySteps + 1);
     this.history.writeHistory = writeHistory.subarray(0, historySteps);
     this.history.prevSymHistory = prevSymHistory.subarray(0, historySteps);
+
+    if (ctx && ctx.captureRowSnapshot) {
+      ctx.captureRowSnapshot();
+      while (ctx.nextSnapshotRow < ctx.numRows) {
+        const origin = ctx.tapeOrigin;
+        const minP = ctx.minHeadPos;
+        const maxP = ctx.maxHeadPos;
+        const len = Math.max(1, maxP - minP + 1);
+        const slice = new Uint8Array(len);
+        const start = origin + minP;
+        for (let i = 0; i < len; i++) {
+          const idx = start + i;
+          if (idx >= 0 && idx < ctx.tapeCapacity) slice[i] = ctx.tape[idx];
+        }
+        ctx.rowSnapshots[ctx.nextSnapshotRow] = { minP, maxP, slice };
+        ctx.nextSnapshotRow++;
+      }
+      this.history.nextSnapshotRow = ctx.nextSnapshotRow;
+    }
 
     this.stats = {
       totalSteps: step,
