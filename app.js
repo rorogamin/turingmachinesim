@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnActual = document.getElementById('btn-actual');
   const btnExport = document.getElementById('btn-export');
   const toggleTrajectory = document.getElementById('toggle-trajectory');
+  const framingSelect = document.getElementById('framing-select');
 
   // Stats Elements
   const statSteps = document.getElementById('stat-steps');
@@ -402,7 +403,8 @@ document.addEventListener('DOMContentLoaded', () => {
     statTime.textContent = `${stats.elapsedMs.toFixed(2)} ms`;
     statSpeed.textContent = `${(stats.stepsPerSec / 1e6).toFixed(2)} M/s`;
 
-    // Build Spacetime Diagram
+    // Build Spacetime Diagram (512 wide x 768 tall, end of nonzeros)
+    renderer.framingMode = framingSelect ? framingSelect.value : 'nonzeros';
     renderer.buildDiagram(simulator);
     renderer.fitView('fit');
 
@@ -641,9 +643,18 @@ document.addEventListener('DOMContentLoaded', () => {
     renderer.render();
   });
 
+  if (framingSelect) {
+    framingSelect.addEventListener('change', (e) => {
+      renderer.framingMode = e.target.value;
+      if (simulator && simulator.history) {
+        renderer.buildDiagram(simulator);
+        renderer.render();
+      }
+    });
+  }
+
   btnFit.addEventListener('click', () => renderer.fitView('fit'));
-  btnFitWidth.addEventListener('click', () => renderer.fitView('fitWidth'));
-  btnActual.addEventListener('click', () => renderer.fitView('actual'));
+  if (btnActual) btnActual.addEventListener('click', () => renderer.fitView('actual'));
   btnExport.addEventListener('click', () => renderer.exportPNG());
 
   // Tape Quick Fill Buttons

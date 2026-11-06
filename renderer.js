@@ -1,6 +1,8 @@
 /**
  * Space-Time Diagram Renderer
  * High-performance Canvas renderer for Turing Machine spacetime diagrams.
+ * - Dimensions: 512 wide x 768 tall.
+ * - Framing: The end of the non-zeros fills the full diagram.
  * - No grid lines (pure raw pixels).
  * - Grayscale: Black is 0, highest symbol is White, intermediate are shades of gray.
  * - Themeable: Monochrome (default), Amber CRT, Matrix Green, Cyberpunk, etc.
@@ -12,9 +14,22 @@ class SpaceTimeRenderer {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { willReadFrequently: false, alpha: false });
 
-    // Offscreen buffer for rendered spacetime diagram
+    // Target dimensions requested: 512 wide x 768 tall
+    this.TARGET_WIDTH = 512;
+    this.TARGET_HEIGHT = 768;
+
+    // Offscreen buffer for scaled 512x768 spacetime diagram
     this.offscreenCanvas = document.createElement('canvas');
-    this.offscreenCtx = this.offscreenCanvas.getContext('2d');
+    this.offscreenCanvas.width = this.TARGET_WIDTH;
+    this.offscreenCanvas.height = this.TARGET_HEIGHT;
+    this.offscreenCtx = this.offscreenCanvas.getContext('2d', { willReadFrequently: false });
+
+    // Raw unscaled canvas buffer
+    this.rawCanvas = document.createElement('canvas');
+    this.rawCtx = this.rawCanvas.getContext('2d', { willReadFrequently: false });
+
+    // Framing mode: 'nonzeros' (the end of the nonzeros is the full diagram) vs 'all'
+    this.framingMode = 'nonzeros';
 
     // Theme definitions
     this.themes = {
@@ -57,7 +72,6 @@ class SpaceTimeRenderer {
         palette: (s, max) => {
           if (s === 0) return [11, 0, 26];
           const f = s / max;
-          // Gradient from deep violet/magenta to bright cyan
           const r = Math.round(255 * (1 - f * 0.8));
           const g = Math.round(240 * f);
           const b = Math.round(255 * f);
@@ -106,9 +120,9 @@ class SpaceTimeRenderer {
         name: 'Paper Light (Inverted)',
         background: '#f8f9fa',
         palette: (s, max) => {
-          if (s === 0) return [248, 249, 250]; // White
+          if (s === 0) return [248, 249, 250];
           const v = Math.round(255 * (1 - s / max));
-          return [v, v, v]; // Charcoal to Black
+          return [v, v, v];
         },
         headColor: '#d63384',
         markerColor: 'rgba(13, 110, 253, 0.9)',
@@ -124,17 +138,15 @@ class SpaceTimeRenderer {
 
     // Display options
     this.showTrajectory = false;
-    this.exploreStep = null; // Step currently inspected in explore mode
+    this.exploreStep = null;
 
-    // Diagram dimensions
-    this.diagramWidth = 0;
-    this.diagramHeight = 0;
+    // Active tape bounds for diagram
     this.minTapeX = 0;
     this.maxTapeX = 0;
+    this.tapeSpan = 0;
+    this.totalSteps = 0;
 
-    // Stored simulator reference
     this.sim = null;
-
     this.setupInteraction();
   }
 
@@ -149,103 +161,121 @@ class SpaceTimeRenderer {
   }
 
   /**
-   * Build the 2D space-time diagram image buffer from simulator history.
-   * Runs in milliseconds using typed array copyWithin.
+   * Build the 512 wide x 768 tall space-time diagram image.
+   * Framed so the end of the non-zeros is the full diagram.
    */
   buildDiagram(sim = null) {
     if (sim) this.sim = sim;
     if (!this.sim || !this.sim.history) return;
 
-    const { totalSteps, headHistory, writeHistory, minHeadPos, maxHeadPos, initialCells } = this.sim.history;
+    const { totalSteps, headHistory, writeHistory, minNonZeroX, maxNonZeroX, minHeadPos, maxHeadPos, initialCells } = this.sim.history;
     const numSymbols = this.sim.spec.numSymbols;
     const maxSymbol = Math.max(1, numSymbols - 1);
 
-    // Padding on sides
-    const padding = 2;
-    this.minTapeX = minHeadPos - padding;
-    this.maxTapeX = maxHeadPos + padding;
-    this.diagramWidth = this.maxTapeX - this.minTapeX + 1;
-    this.diagramHeight = totalSteps + 1;
+    this.totalSteps = totalSteps;
 
-    const W = this.diagramWidth;
-    const H = Math.min(this.diagramHeight, 32767); // Safe browser canvas size
+    // "The end of the nonzeros is the full diagram":
+    // The diagram boundaries horizontally are defined by the non-zero symbols at the end
+    if (this.framingMode === 'nonzeros' && minNonZeroX !== undefined && maxNonZeroX !== undefined) {
+      this.minTapeX = minNonZeroX;
+      this.maxTapeX = maxNonZeroX;
+    } else {
+      this.minTapeX = minHeadPos;
+      this.maxTapeX = maxHeadPos;
+    }
 
-    this.offscreenCanvas.width = W;
-    this.offscreenCanvas.height = H;
+    // Ensure span is at least 1 cell
+    if (this.minTapeX >= this.maxTapeX) {
+      this.minTapeX -= 1;
+      this.maxTapeX += 1;
+    }
 
-    const imgData = this.offscreenCtx.createImageData(W, H);
+    this.tapeSpan = this.maxTapeX - this.minTapeX + 1;
+    const W_cells = this.tapeSpan;
+    const H_steps = totalSteps + 1;
+
+    // 1. Build unscaled 1-cell-per-pixel buffer
+    this.rawCanvas.width = W_cells;
+    this.rawCanvas.height = H_steps;
+
+    const imgData = this.rawCtx.createImageData(W_cells, H_steps);
     const pixelBuffer = new Uint32Array(imgData.data.buffer);
 
-    // Generate color lookup table for symbols
+    // Color lookup table
     const theme = this.themes[this.currentTheme] || this.themes.monochrome;
     const colorLut = new Uint32Array(numSymbols + 1);
     for (let s = 0; s <= numSymbols; s++) {
       const rgb = theme.palette(s, maxSymbol);
-      // Little-endian RGBA: alpha in top byte
-      pixelBuffer[0] = 0;
+      // Little-endian 0xAABBGGRR
       colorLut[s] = 0xFF000000 | (rgb[2] << 16) | (rgb[1] << 8) | rgb[0];
     }
-
     const blankColor = colorLut[0];
 
-    // Initialize Row 0 (Blank + Initial Tape cells)
-    pixelBuffer.fill(blankColor, 0, W);
+    // Initialize Row 0
+    pixelBuffer.fill(blankColor, 0, W_cells);
     for (const cell of initialCells) {
       const col = cell.pos - this.minTapeX;
-      if (col >= 0 && col < W) {
+      if (col >= 0 && col < W_cells) {
         const sym = cell.symbol;
         pixelBuffer[col] = colorLut[sym >= numSymbols ? numSymbols : sym];
       }
     }
 
-    // Incremental generation: each row t is row t-1 with 1 write changed!
-    for (let t = 1; t < H; t++) {
-      const prevRowStart = (t - 1) * W;
-      const currRowStart = t * W;
-      pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W);
+    // Incremental row generation using copyWithin
+    for (let t = 1; t < H_steps; t++) {
+      const prevRowStart = (t - 1) * W_cells;
+      const currRowStart = t * W_cells;
+      pixelBuffer.copyWithin(currRowStart, prevRowStart, prevRowStart + W_cells);
 
-      // Apply write from step t-1
       const writePos = headHistory[t - 1] - this.minTapeX;
       const writtenSym = writeHistory[t - 1];
-      if (writePos >= 0 && writePos < W) {
+      if (writePos >= 0 && writePos < W_cells) {
         pixelBuffer[currRowStart + writePos] = colorLut[writtenSym >= numSymbols ? numSymbols : writtenSym];
       }
     }
 
-    this.offscreenCtx.putImageData(imgData, 0, 0);
+    this.rawCtx.putImageData(imgData, 0, 0);
+
+    // 2. Scale exactly to 512 wide x 768 tall (no grid, crisp nearest-neighbor)
+    this.offscreenCanvas.width = this.TARGET_WIDTH;
+    this.offscreenCanvas.height = this.TARGET_HEIGHT;
+
+    this.offscreenCtx.imageSmoothingEnabled = false;
+    this.offscreenCtx.fillStyle = theme.background;
+    this.offscreenCtx.fillRect(0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT);
+
+    this.offscreenCtx.drawImage(
+      this.rawCanvas,
+      0, 0, W_cells, H_steps,
+      0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT
+    );
   }
 
   /**
-   * Fit diagram into canvas viewport cleanly
+   * Reset / Fit view to 512 x 768
    */
   fitView(mode = 'fit') {
-    if (!this.diagramWidth || !this.diagramHeight) return;
     const rect = this.canvas.getBoundingClientRect();
-    const cw = rect.width;
-    const ch = rect.height;
+    const cw = rect.width || this.TARGET_WIDTH;
+    const ch = rect.height || this.TARGET_HEIGHT;
 
-    if (mode === 'fitWidth') {
-      this.zoom = Math.max(0.01, (cw - 40) / this.diagramWidth);
-      this.panX = (cw - this.diagramWidth * this.zoom) / 2;
-      this.panY = 20;
-    } else if (mode === 'actual') {
+    if (mode === 'actual') {
       this.zoom = 1.0;
-      this.panX = (cw - this.diagramWidth) / 2;
-      this.panY = 20;
+      this.panX = (cw - this.TARGET_WIDTH) / 2;
+      this.panY = (ch - this.TARGET_HEIGHT) / 2;
     } else {
-      // Fit both
-      const scaleX = (cw - 40) / this.diagramWidth;
-      const scaleY = (ch - 40) / this.diagramHeight;
-      this.zoom = Math.min(scaleX, scaleY, 15);
-      if (this.zoom <= 0) this.zoom = 1;
-      this.panX = (cw - this.diagramWidth * this.zoom) / 2;
-      this.panY = (ch - this.diagramHeight * this.zoom) / 2;
+      const scaleX = (cw - 24) / this.TARGET_WIDTH;
+      const scaleY = (ch - 24) / this.TARGET_HEIGHT;
+      this.zoom = Math.min(scaleX, scaleY, 1.0);
+      if (this.zoom <= 0) this.zoom = 1.0;
+      this.panX = (cw - this.TARGET_WIDTH * this.zoom) / 2;
+      this.panY = (ch - this.TARGET_HEIGHT * this.zoom) / 2;
     }
     this.render();
   }
 
   /**
-   * Main render loop
+   * Render onto main canvas
    */
   render() {
     const canvas = this.canvas;
@@ -270,49 +300,63 @@ class SpaceTimeRenderer {
       ctx.fillStyle = '#666';
       ctx.font = '14px Inter, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText('No Turing Machine simulation run yet. Click Run to simulate.', width / 2, height / 2);
+      ctx.fillText('No Turing Machine simulation run yet. Click Run Simulation.', width / 2, height / 2);
       ctx.restore();
       return;
     }
 
-    // Disable smoothing for sharp raw pixel diagram without blur or grid
     ctx.imageSmoothingEnabled = false;
 
     ctx.save();
     ctx.translate(this.panX, this.panY);
     ctx.scale(this.zoom, this.zoom);
 
-    // Draw space-time diagram offscreen buffer
+    // Draw the 512 x 768 diagram
     ctx.drawImage(this.offscreenCanvas, 0, 0);
 
+    // Subtle crisp border around diagram
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
+    ctx.lineWidth = 1 / this.zoom;
+    ctx.strokeRect(0, 0, this.TARGET_WIDTH, this.TARGET_HEIGHT);
+
     // Optional Head Trajectory overlay
-    if (this.showTrajectory && this.sim.history) {
+    if (this.showTrajectory && this.sim.history && this.tapeSpan > 0 && this.totalSteps > 0) {
       const { headHistory, totalSteps } = this.sim.history;
       ctx.beginPath();
       ctx.strokeStyle = theme.headColor;
-      ctx.lineWidth = Math.max(0.5, 1 / this.zoom);
+      ctx.lineWidth = Math.max(1, 2 / this.zoom);
+
       for (let t = 0; t <= totalSteps; t++) {
-        const x = headHistory[t] - this.minTapeX + 0.5;
-        const y = t + 0.5;
+        const normX = (headHistory[t] - this.minTapeX + 0.5) / this.tapeSpan;
+        const normY = (t + 0.5) / (totalSteps + 1);
+        const x = normX * this.TARGET_WIDTH;
+        const y = normY * this.TARGET_HEIGHT;
+
         if (t === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
     }
 
-    // Explore mode marker
-    if (this.exploreStep !== null && this.exploreStep >= 0 && this.sim.history) {
+    // Explore Mode Marker
+    if (this.exploreStep !== null && this.exploreStep >= 0 && this.sim.history && this.tapeSpan > 0) {
       const t = this.exploreStep;
-      const headX = this.sim.history.headHistory[t] - this.minTapeX;
+      const headX = this.sim.history.headHistory[t];
 
-      // Highlight row line
+      const normY = t / (this.totalSteps + 1);
+      const rowY = normY * this.TARGET_HEIGHT;
+      const rowH = Math.max(2, this.TARGET_HEIGHT / (this.totalSteps + 1));
+
+      // Row indicator line
       ctx.fillStyle = theme.markerColor;
-      ctx.fillRect(0, t, this.diagramWidth, Math.max(1, 1 / this.zoom));
+      ctx.fillRect(0, rowY, this.TARGET_WIDTH, rowH);
 
-      // Highlight head position cell
+      // Head cell box
+      const normHead = (headX - this.minTapeX) / this.tapeSpan;
+      const cellW = this.TARGET_WIDTH / this.tapeSpan;
       ctx.strokeStyle = theme.headColor;
-      ctx.lineWidth = Math.max(1, 2 / this.zoom);
-      ctx.strokeRect(headX, t, 1, 1);
+      ctx.lineWidth = Math.max(1.5, 2 / this.zoom);
+      ctx.strokeRect(normHead * this.TARGET_WIDTH, rowY, cellW, rowH);
     }
 
     ctx.restore();
@@ -320,7 +364,7 @@ class SpaceTimeRenderer {
   }
 
   /**
-   * Handle user panning, zooming, and explore clicks
+   * User interaction: zoom, pan, and click to seek in explore mode
    */
   setupInteraction() {
     let isDragging = false;
@@ -347,7 +391,6 @@ class SpaceTimeRenderer {
       isDragging = false;
     });
 
-    // Zoom with mouse wheel
     this.canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const rect = this.canvas.getBoundingClientRect();
@@ -355,9 +398,8 @@ class SpaceTimeRenderer {
       const mouseY = e.clientY - rect.top;
 
       const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      const newZoom = Math.min(Math.max(0.01, this.zoom * zoomFactor), 80);
+      const newZoom = Math.min(Math.max(0.1, this.zoom * zoomFactor), 40);
 
-      // Zoom centered on mouse pointer
       this.panX = mouseX - (mouseX - this.panX) * (newZoom / this.zoom);
       this.panY = mouseY - (mouseY - this.panY) * (newZoom / this.zoom);
       this.zoom = newZoom;
@@ -365,30 +407,30 @@ class SpaceTimeRenderer {
       this.render();
     }, { passive: false });
 
-    // Click to seek in Explore Mode
     this.canvas.addEventListener('click', (e) => {
-      if (!this.sim || !this.sim.history) return;
+      if (!this.sim || !this.sim.history || this.totalSteps <= 0) return;
       const rect = this.canvas.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
 
-      // Transform screen to diagram coordinates
-      const diagY = Math.floor((mouseY - this.panY) / this.zoom);
-      if (diagY >= 0 && diagY <= this.sim.history.totalSteps) {
+      // Transform click to diagram coordinate (0 to TARGET_HEIGHT)
+      const diagY = (mouseY - this.panY) / this.zoom;
+      if (diagY >= 0 && diagY <= this.TARGET_HEIGHT) {
+        const step = Math.min(this.totalSteps, Math.max(0, Math.round((diagY / this.TARGET_HEIGHT) * this.totalSteps)));
         if (this.onStepSelect) {
-          this.onStepSelect(diagY);
+          this.onStepSelect(step);
         }
       }
     });
   }
 
   /**
-   * Export high resolution PNG of space-time diagram
+   * Export high-resolution 512 x 768 PNG image
    */
   exportPNG() {
     if (!this.offscreenCanvas || !this.offscreenCanvas.width) return;
     const link = document.createElement('a');
-    link.download = `spacetime-diagram-${Date.now()}.png`;
+    link.download = `spacetime-512x768-${Date.now()}.png`;
     link.href = this.offscreenCanvas.toDataURL('image/png');
     link.click();
   }

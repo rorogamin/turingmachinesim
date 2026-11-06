@@ -146,12 +146,20 @@
                 <label for="max-steps">Max Steps:</label>
                 <input type="number" id="max-steps" class="styled-input" value="500" min="1" max="500000" step="100">
               </div>
-              <div class="form-group half checkbox-group">
-                <label class="checkbox-label" title="Overlay head trajectory path on diagram">
-                  <input type="checkbox" id="toggle-trajectory">
-                  <span>Head Path Line</span>
-                </label>
+              <div class="form-group half">
+                <label for="framing-select">Framing:</label>
+                <select id="framing-select" class="styled-select">
+                  <option value="nonzeros" selected>End of Non-Zeros</option>
+                  <option value="all">Full Visited Tape</option>
+                </select>
               </div>
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label" title="Overlay head trajectory path on diagram">
+                <input type="checkbox" id="toggle-trajectory">
+                <span>Show Head Trajectory Line</span>
+              </label>
             </div>
           </div>
         </div>
@@ -196,12 +204,12 @@
         <div class="viewport-toolbar">
           <div class="toolbar-left">
             <span class="toolbar-title">Space-Time Diagram</span>
-            <span class="toolbar-hint">(Time &darr; &middot; Tape Space &rarr; &middot; No Grid &middot; Scroll to Zoom &middot; Drag to Pan)</span>
+            <span class="toolbar-badge">512 &times; 768 px</span>
+            <span class="toolbar-hint">(End of Non-Zeros &middot; No Grid &middot; Scroll to Zoom &middot; Drag to Pan)</span>
           </div>
           <div class="toolbar-right">
-            <button id="btn-fit" class="btn btn-xs btn-outline" title="Fit entire diagram into view">Fit All</button>
-            <button id="btn-fit-width" class="btn btn-xs btn-outline" title="Fit diagram to viewport width">Fit Width</button>
-            <button id="btn-actual" class="btn btn-xs btn-outline" title="1:1 native pixel scale">1:1 Pixels</button>
+            <button id="btn-fit" class="btn btn-xs btn-outline" title="Reset and center 512x768 diagram">Reset View</button>
+            <button id="btn-actual" class="btn btn-xs btn-outline" title="1:1 native 512x768 scale">1:1 Scale</button>
           </div>
         </div>
 

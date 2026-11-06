@@ -337,12 +337,24 @@ class TuringMachineSimulator {
       haltReason = 'step_limit';
     }
 
-    // Count non-zero symbols on final tape
+    // Count non-zero symbols on final tape and determine non-zero bounds
     let nonZeros = 0;
+    let minNonZero = Infinity;
+    let maxNonZero = -Infinity;
     const countStart = Math.max(0, tapeOrigin + minHeadPos - 5);
     const countEnd = Math.min(tapeCapacity, tapeOrigin + maxHeadPos + 6);
     for (let i = countStart; i < countEnd; i++) {
-      if (tape[i] > 0) nonZeros++;
+      if (tape[i] > 0) {
+        nonZeros++;
+        const pos = i - tapeOrigin;
+        if (pos < minNonZero) minNonZero = pos;
+        if (pos > maxNonZero) maxNonZero = pos;
+      }
+    }
+
+    if (minNonZero === Infinity) {
+      minNonZero = minHeadPos;
+      maxNonZero = maxHeadPos;
     }
 
     const elapsedMs = performance.now() - startTime;
@@ -357,6 +369,8 @@ class TuringMachineSimulator {
       prevSymHistory: prevSymHistory.subarray(0, step),
       minHeadPos,
       maxHeadPos,
+      minNonZeroX: minNonZero,
+      maxNonZeroX: maxNonZero,
       checkpoints,
       CHECKPOINT_INTERVAL,
       initialCells,
@@ -368,6 +382,8 @@ class TuringMachineSimulator {
       haltReason,
       minX: minHeadPos,
       maxX: maxHeadPos,
+      minNonZeroX: minNonZero,
+      maxNonZeroX: maxNonZero,
       finalNonZeros: nonZeros,
       elapsedMs,
       stepsPerSec,
